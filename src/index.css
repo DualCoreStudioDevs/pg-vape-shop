@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* Reset global que interfería con el diseño */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #0a0a0a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  text-align: left;
+}
+
+/* Quitar estilos por defecto de h1/h2 que rompían el diseño */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-weight: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+p {
+  margin: 0;
+}
+
+/* Scrollbar oculta para los chips de categoría */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

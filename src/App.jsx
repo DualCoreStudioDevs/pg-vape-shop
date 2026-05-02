@@ -1,0 +1,1694 @@
+// ============================================================
+// PG VAPE SHOP - App.jsx
+// UI: Dark Mode SaaS · Glassmorphism · Lucide Icons
+// Mejoras: Base64 image, PrintTicket, Dashboard con gráficas SVG,
+//          cierre de modales correcto, completeSale desde services.js
+// ============================================================
+
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  ShoppingCart, Package, BarChart3, LogOut, Plus, Minus, Trash2,
+  Search, X, Check, AlertTriangle, Zap, TrendingUp, DollarSign,
+  ShoppingBag, Eye, EyeOff, Lock, User, ChevronRight, Tag,
+  RefreshCw, Clock, Layers, ArrowUpRight, Flame, Box, Printer,
+  Image, Calendar, Activity,
+} from "lucide-react";
+
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore, collection, doc, updateDoc,
+  onSnapshot, query, where, orderBy, Timestamp,
+} from "firebase/firestore";
+import {
+  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+} from "firebase/auth";
+
+import {
+  fileToBase64,
+  addProduct,
+  updateProduct,
+  deleteProduct,
+  completeSale,
+  getSalesToday,
+  getSalesThisWeek,
+  getSalesThisMonth,
+  sumSales,
+  groupSalesByDay,
+  salesByMethod,
+} from "./firebase/services";
+
+// ─── Firebase init ─────────────────────────────────────────
+const firebaseConfig = {
+  apiKey:            "AIzaSyB9kvPUvn0x-zHWgnHrsKhlwq_HKcBCiR4",
+  authDomain:        "pg-vape-shop.firebaseapp.com",
+  projectId:         "pg-vape-shop",
+  storageBucket:     "pg-vape-shop.firebasestorage.app",
+  messagingSenderId: "611196230742",
+  appId:             "1:611196230742:web:8dd4322fbf2890b1672ff7",
+};
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+// ─── Constantes ─────────────────────────────────────────────
+const NICOTINE_LEVELS = ["0mg", "3mg", "6mg", "12mg", "18mg", "50mg", "FREE"];
+const CATEGORIES      = ["Todos", "Desechables", "Pods", "Mods", "Líquidos", "Accesorios"];
+const CATS_FORM       = ["Desechables", "Pods", "Mods", "Líquidos", "Accesorios"];
+
+const formatCurrency = (amount) =>
+  new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP" }).format(amount ?? 0);
+
+const today = () => {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+// ── Imagen: prefiere Base64, fallback a URL ─────────────────
+const imgSrc = (p) => p?.imageBase64 || p?.imageUrl || "";
+
+// ============================================================
+// PRINT STYLES — inyectadas una sola vez en <head>
+// ============================================================
+const PRINT_STYLES = `
+@media print {
+  body > *:not(#pg-ticket-root) { display: none !important; }
+  #pg-ticket-root { display: block !important; }
+  #pg-ticket-root .no-print { display: none !important; }
+  @page { margin: 4mm; size: 80mm auto; }
+}
+`;
+
+function injectPrintStyles() {
+  if (document.getElementById("pg-print-style")) return;
+  const s = document.createElement("style");
+  s.id = "pg-print-style";
+  s.textContent = PRINT_STYLES;
+  document.head.appendChild(s);
+}
+
+// ============================================================
+// TICKET DE IMPRESIÓN — estilo 80 mm
+// ============================================================
+function PrintTicket({ sale, onClose }) {
+  const fecha = new Date().toLocaleString("es-DO", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+
+  useEffect(() => {
+    injectPrintStyles();
+    // Pequeño delay para que el DOM esté listo antes de imprimir
+    const t = setTimeout(() => window.print(), 150);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <div
+      id="pg-ticket-root"
+      style={{
+        position: "fixed", inset: 0, zIndex: 999,
+        background: "rgba(0,0,0,0.75)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          background: "#fff", color: "#000",
+          width: 300, padding: "16px 12px",
+          fontFamily: "'Courier New', Courier, monospace",
+          fontSize: 12, lineHeight: 1.5,
+          borderRadius: 4,
+        }}
+      >
+        {/* Cabecera */}
+        <div style={{ textAlign: "center", marginBottom: 8 }}>
+          <div style={{ fontWeight: 900, fontSize: 16, letterSpacing: 1 }}>PG VAPE SHOP</div>
+          <div style={{ fontSize: 10, color: "#555" }}>Sistema POS</div>
+          <div style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
+          <div style={{ fontSize: 10 }}>{fecha}</div>
+          {sale.cajero && <div style={{ fontSize: 10, color: "#555" }}>Cajero: {sale.cajero.split("@")[0]}</div>}
+        </div>
+
+        <div style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
+
+        {/* Ítems */}
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left",  fontWeight: 700 }}>Producto</th>
+              <th style={{ textAlign: "center", fontWeight: 700 }}>Cant</th>
+              <th style={{ textAlign: "right",  fontWeight: 700 }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sale.items.map((item, i) => (
+              <tr key={i}>
+                <td style={{ paddingTop: 3 }}>
+                  {item.productName || item.nombre}
+                  {item.nicotina && <span style={{ fontSize: 9, color: "#666" }}> [{item.nicotina}]</span>}
+                  {item.esLiquidoDetallado && (
+                    <span style={{ fontSize: 9, color: "#333" }}> ({item.mlAmount}ml)</span>
+                  )}
+                </td>
+                <td style={{ textAlign: "center", paddingTop: 3 }}>
+                  {item.esLiquidoDetallado ? "1" : (item.quantity ?? item.qty)}
+                </td>
+                <td style={{ textAlign: "right", paddingTop: 3 }}>
+                  {item.esLiquidoDetallado
+                    ? `RD$${Number(item.montoRD).toFixed(2)}`
+                    : `RD$${Number(item.subtotal ?? item.precio * item.qty).toFixed(2)}`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+
+        {/* Total */}
+        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 900, fontSize: 14 }}>
+          <span>TOTAL</span>
+          <span>RD${Number(sale.total).toFixed(2)}</span>
+        </div>
+        <div style={{ fontSize: 10, marginTop: 4, color: "#555" }}>
+          Pago: <strong style={{ textTransform: "capitalize" }}>{sale.metodoPago}</strong>
+          {sale.cambio > 0 && <span> · Cambio: RD${Number(sale.cambio).toFixed(2)}</span>}
+        </div>
+
+        <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+        <div style={{ textAlign: "center", fontSize: 10 }}>¡Gracias por tu visita! 🔥</div>
+
+        {/* Botón cerrar — oculto al imprimir */}
+        <button
+          className="no-print"
+          onClick={onClose}
+          style={{
+            marginTop: 14, width: "100%", padding: "8px 0",
+            background: "#ea580c", color: "#fff",
+            border: "none", borderRadius: 6,
+            fontWeight: 700, cursor: "pointer", fontSize: 13,
+          }}
+        >
+          Cerrar ticket
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SPLASH SCREEN
+// ============================================================
+function SplashScreen() {
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-500/30 animate-pulse">
+          <Flame className="w-8 h-8 text-white" />
+        </div>
+        <p className="text-zinc-500 text-sm tracking-widest uppercase">Cargando...</p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN SCREEN
+// ============================================================
+function LoginScreen() {
+  const [email,    setEmail]    = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [error,    setError]    = useState("");
+  const [loading,  setLoading]  = useState(false);
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch {
+      setError("Credenciales inválidas. Verifica tu email y contraseña.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-orange-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-0 right-0 w-[400px] h-[400px] bg-orange-600/5 rounded-full blur-3xl pointer-events-none" />
+      <div
+        className="absolute inset-0 opacity-[0.03] pointer-events-none"
+        style={{
+          backgroundImage: `linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
+                            linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)`,
+          backgroundSize: "50px 50px",
+        }}
+      />
+      <div className="w-full max-w-md relative z-10">
+        <div className="flex flex-col items-center mb-10">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-orange-700 flex items-center justify-center shadow-2xl shadow-orange-500/40 mb-4">
+            <Flame className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-3xl font-black text-white tracking-tight">PG VAPE SHOP</h1>
+          <p className="text-zinc-500 text-sm mt-1">Sistema de Punto de Venta</p>
+        </div>
+        <div
+          className="rounded-2xl p-8 border border-white/10"
+          style={{ background: "rgba(26,26,26,0.8)", backdropFilter: "blur(24px)" }}
+        >
+          <h2 className="text-xl font-bold text-white mb-6">Iniciar Sesión</h2>
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div className="space-y-1.5">
+              <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Email</label>
+              <div className="relative">
+                <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                <input
+                  type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                  required placeholder="admin@pgvape.com"
+                  className="w-full bg-black/40 border border-zinc-800 text-white placeholder-zinc-600 rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/50 transition-all"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Contraseña</label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                <input
+                  type={showPass ? "text" : "password"} value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required placeholder="••••••••"
+                  className="w-full bg-black/40 border border-zinc-800 text-white placeholder-zinc-600 rounded-xl pl-10 pr-12 py-3 text-sm focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500/50 transition-all"
+                />
+                <button type="button" onClick={() => setShowPass(!showPass)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+            {error && (
+              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <p className="text-red-400 text-sm">{error}</p>
+              </div>
+            )}
+            <button
+              type="submit" disabled={loading}
+              className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-bold rounded-xl py-3 text-sm transition-all duration-200 shadow-lg shadow-orange-500/30 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <>Entrar al Sistema <ChevronRight className="w-4 h-4" /></>}
+            </button>
+          </form>
+        </div>
+        <p className="text-center text-zinc-700 text-xs mt-6">© 2025 PG Vape Shop · Sistema POS</p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ROOT
+// ============================================================
+export default function App() {
+  const [user,    setUser]    = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
+    return unsub;
+  }, []);
+
+  if (loading) return <SplashScreen />;
+  if (!user)   return <LoginScreen />;
+  return <MainApp user={user} />;
+}
+
+// ============================================================
+// MAIN APP
+// ============================================================
+function MainApp({ user }) {
+  const [view,     setView]     = useState("pos");
+  const [products, setProducts] = useState([]);
+  const [sales,    setSales]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
+
+  // Real-time productos
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "productos"), (snap) => {
+      setProducts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Real-time ventas de hoy
+  useEffect(() => {
+    const todayStart = Timestamp.fromDate(today());
+    const q = query(
+      collection(db, "ventas"),
+      where("fecha", ">=", todayStart),
+      orderBy("fecha", "desc")
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setSales(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, []);
+
+  const handleLogout = () => signOut(auth);
+
+  const navItems = [
+    { id: "pos",       label: "Punto de Venta", icon: ShoppingCart },
+    { id: "dashboard", label: "Dashboard",       icon: BarChart3    },
+    { id: "inventory", label: "Inventario",      icon: Package      },
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex flex-col" style={{ fontFamily: "'Inter', sans-serif" }}>
+      {/* TOP NAV */}
+      <header className="bg-[#111111] border-b border-zinc-800/60 px-4 lg:px-6 py-3 flex items-center justify-between sticky top-0 z-50">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-lg shadow-orange-500/30">
+            <Flame className="w-4 h-4 text-white" />
+          </div>
+          <span className="font-black text-white text-lg tracking-tight hidden sm:block">PG VAPE</span>
+          <span className="hidden sm:block text-zinc-600">|</span>
+          <nav className="flex items-center gap-1">
+            {navItems.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id} onClick={() => setView(id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                  view === id
+                    ? "bg-orange-500/15 text-orange-400 border border-orange-500/30"
+                    : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span className="hidden md:block">{label}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="hidden sm:flex items-center gap-2 text-sm">
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-zinc-400">{user.email}</span>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 text-zinc-500 hover:text-red-400 text-sm transition-colors px-2 py-1.5 rounded-lg hover:bg-red-500/10"
+          >
+            <LogOut className="w-4 h-4" />
+            <span className="hidden sm:block">Salir</span>
+          </button>
+        </div>
+      </header>
+
+      {/* CONTENT */}
+      <main className="flex-1">
+        {loading ? (
+          <div className="flex items-center justify-center h-96">
+            <RefreshCw className="w-6 h-6 text-orange-500 animate-spin" />
+          </div>
+        ) : view === "pos" ? (
+          <POSView products={products} sales={sales} user={user} />
+        ) : view === "dashboard" ? (
+          <DashboardView products={products} sales={sales} />
+        ) : (
+          <InventoryView products={products} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ============================================================
+// POS VIEW
+// ============================================================
+function POSView({ products, sales, user }) {
+  const [cart,            setCart]            = useState([]);
+  const [search,          setSearch]          = useState("");
+  const [selectedCat,     setSelectedCat]     = useState("Todos");
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [selectedNic,     setSelectedNic]     = useState({});
+  const [saleModal,       setSaleModal]       = useState(false);
+  const [paymentMethod,   setPaymentMethod]   = useState("efectivo");
+  const [amountPaid,      setAmountPaid]      = useState("");
+  const [liquidModal,     setLiquidModal]     = useState(null);
+  const [liquidMonto,     setLiquidMonto]     = useState("");
+  const [ticket,          setTicket]          = useState(null);   // datos del ticket a imprimir
+  const [processing,      setProcessing]      = useState(false);
+  const [saleError,       setSaleError]       = useState("");
+
+  const filteredProducts = useMemo(() => products.filter((p) => {
+    const matchSearch = p.nombre?.toLowerCase().includes(search.toLowerCase()) ||
+                        p.marca?.toLowerCase().includes(search.toLowerCase());
+    const matchCat    = selectedCat === "Todos" || p.categoria === selectedCat;
+    const hasStock    = p.modoLiquido === "detallado" ? (p.stockMl || 0) > 0 : (p.stock || 0) > 0;
+    return matchSearch && matchCat && hasStock;
+  }), [products, search, selectedCat]);
+
+  const cartTotal = useMemo(() =>
+    cart.reduce((sum, item) => {
+      if (item.esLiquidoDetallado) return sum + item.montoRD;
+      return sum + item.precio * item.qty;
+    }, 0), [cart]);
+
+  const change = parseFloat(amountPaid || 0) - cartTotal;
+
+  // ── Carrito ──
+  const addToCart = (product, nicotineLevel) => {
+    if (product.categoria === "Líquidos" && product.modoLiquido === "detallado") {
+      setLiquidModal(product);
+      setLiquidMonto("");
+      return;
+    }
+    const key = `${product.id}-${nicotineLevel || "default"}`;
+    setCart((prev) => {
+      const existing = prev.find((i) => i.key === key);
+      if (existing) return prev.map((i) => i.key === key ? { ...i, qty: i.qty + 1 } : i);
+      return [...prev, { key, id: product.id, nombre: product.nombre, marca: product.marca, precio: product.precio, nicotina: nicotineLevel, qty: 1 }];
+    });
+  };
+
+  const addLiquidToCart = () => {
+    if (!liquidModal || !liquidMonto || parseFloat(liquidMonto) <= 0) return;
+    const monto      = parseFloat(liquidMonto);
+    const precioPorMl = liquidModal.precioPorMl || 1;
+    const mlAmount   = Math.round((monto / precioPorMl) * 100) / 100;
+    const key        = `liquid-${liquidModal.id}-${Date.now()}`;
+    setCart((prev) => [...prev, {
+      key, id: liquidModal.id, nombre: liquidModal.nombre, marca: liquidModal.marca,
+      esLiquidoDetallado: true, mlAmount, montoRD: monto, precioPorMl, precio: monto, qty: 1,
+    }]);
+    setLiquidModal(null);
+    setLiquidMonto("");
+  };
+
+  const updateQty    = (key, delta) => setCart((prev) => prev.map((i) => i.key === key ? { ...i, qty: Math.max(0, i.qty + delta) } : i).filter((i) => i.qty > 0));
+  const removeFromCart = (key)      => setCart((prev) => prev.filter((i) => i.key !== key));
+  const clearCart    = ()           => setCart([]);
+
+  // ── Confirmar venta — usa completeSale de services.js ──────
+  const confirmSale = async () => {
+    setSaleError("");
+    setProcessing(true);
+    try {
+      const result = await completeSale(
+        cart,
+        cartTotal,
+        paymentMethod,
+        user?.email ?? null
+      );
+
+      if (result.success) {
+        // Datos para el ticket de impresión
+        const ticketData = {
+          items:       cart,
+          total:       cartTotal,
+          metodoPago:  paymentMethod,
+          cajero:      user?.email,
+          cambio:      paymentMethod === "efectivo" && change > 0 ? change : 0,
+          ventaId:     result.ventaId,
+        };
+
+        // Cerrar modal de venta y resetear estado
+        setSaleModal(false);
+        setAmountPaid("");
+        setPaymentMethod("efectivo");
+        clearCart();
+
+        // Mostrar ticket imprimible
+        setTicket(ticketData);
+      }
+    } catch (err) {
+      setSaleError(err.message || "Error al procesar la venta.");
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  return (
+    <div className="flex h-[calc(100vh-57px)]">
+      {/* ─── LEFT: Catálogo ─── */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Search + Filtros */}
+        <div className="bg-[#111111] border-b border-zinc-800/60 p-4 space-y-3">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+            <input
+              type="text" placeholder="Buscar producto o marca..." value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 text-white placeholder-zinc-600 rounded-xl pl-10 pr-10 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/30 transition-all"
+            />
+            {search && (
+              <button onClick={() => setSearch("")} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+            {CATEGORIES.map((cat) => (
+              <button
+                key={cat} onClick={() => setSelectedCat(cat)}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 ${
+                  selectedCat === cat
+                    ? "bg-orange-500 text-white shadow-lg shadow-orange-500/30"
+                    : "bg-zinc-800/60 text-zinc-400 hover:bg-zinc-700/60 hover:text-zinc-200"
+                }`}
+              >{cat}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Grilla de productos */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {filteredProducts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-600">
+              <Box className="w-12 h-12 opacity-30" />
+              <p className="text-sm">No se encontraron productos</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              {filteredProducts.map((product) => (
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  selectedNic={selectedNic[product.id]}
+                  onSelectNic={(nic) => setSelectedNic((prev) => ({ ...prev, [product.id]: nic }))}
+                  onAdd={() => addToCart(product, selectedNic[product.id])}
+                  onPreview={() => setSelectedProduct(product)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── RIGHT: Carrito ─── */}
+      <div className="w-80 xl:w-96 bg-[#111111] border-l border-zinc-800/60 flex flex-col shrink-0">
+        <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShoppingCart className="w-5 h-5 text-orange-400" />
+            <span className="font-bold text-white">Carrito</span>
+            {cart.length > 0 && (
+              <span className="bg-orange-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                {cart.reduce((s, i) => s + i.qty, 0)}
+              </span>
+            )}
+          </div>
+          {cart.length > 0 && (
+            <button onClick={clearCart} className="text-zinc-600 hover:text-red-400 transition-colors">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+          {cart.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-700">
+              <ShoppingCart className="w-10 h-10 opacity-30" />
+              <p className="text-sm text-center">El carrito está vacío.<br />Agrega productos.</p>
+            </div>
+          ) : (
+            cart.map((item) => (
+              <CartItem key={item.key} item={item} onUpdate={updateQty} onRemove={removeFromCart} />
+            ))
+          )}
+        </div>
+
+        <div className="border-t border-zinc-800/60 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400 text-sm">Subtotal</span>
+            <span className="text-white font-semibold">{formatCurrency(cartTotal)}</span>
+          </div>
+          <div className="flex items-center justify-between border-t border-zinc-800 pt-3">
+            <span className="text-white font-bold">Total</span>
+            <span className="text-orange-400 font-black text-xl">{formatCurrency(cartTotal)}</span>
+          </div>
+          <button
+            onClick={() => { setSaleError(""); setSaleModal(true); }}
+            disabled={cart.length === 0}
+            className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-30 disabled:cursor-not-allowed text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/20 hover:-translate-y-0.5 flex items-center justify-center gap-2"
+          >
+            <Zap className="w-4 h-4" />
+            Cobrar {formatCurrency(cartTotal)}
+          </button>
+        </div>
+      </div>
+
+      {/* ── MODAL: Confirmar venta ── */}
+      {saleModal && (
+        <SaleModal
+          cart={cart}
+          total={cartTotal}
+          paymentMethod={paymentMethod}
+          setPaymentMethod={setPaymentMethod}
+          amountPaid={amountPaid}
+          setAmountPaid={setAmountPaid}
+          change={change}
+          onConfirm={confirmSale}
+          onClose={() => { setSaleModal(false); setSaleError(""); }}
+          processing={processing}
+          error={saleError}
+        />
+      )}
+
+      {/* ── TICKET DE IMPRESIÓN ── */}
+      {ticket && <PrintTicket sale={ticket} onClose={() => setTicket(null)} />}
+
+      {/* ── MODAL: Vista detalle de producto ── */}
+      {selectedProduct && (
+        <ProductDetailModal
+          product={selectedProduct}
+          onClose={() => setSelectedProduct(null)}
+          onAdd={(nic) => { addToCart(selectedProduct, nic); setSelectedProduct(null); }}
+        />
+      )}
+
+      {/* ── MODAL: Monto para líquido detallado ── */}
+      {liquidModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setLiquidModal(null)}>
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+          <div className="relative bg-[#1a1a1a] border border-cyan-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setLiquidModal(null)} className="absolute top-4 right-4 text-zinc-500 hover:text-white">
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-3 mb-5">
+              {imgSrc(liquidModal) ? (
+                <img src={imgSrc(liquidModal)} alt="" className="w-12 h-12 rounded-full object-cover border border-cyan-500/30" onError={(e) => e.target.style.display = "none"} />
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center">
+                  <Package className="w-5 h-5 text-cyan-400" />
+                </div>
+              )}
+              <div>
+                <p className="text-white font-bold">{liquidModal.nombre}</p>
+                <p className="text-cyan-400 text-sm">{formatCurrency(liquidModal.precioPorMl || 0)}/ml · {liquidModal.stockMl || 0}ml disp.</p>
+              </div>
+            </div>
+            <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Monto en RD$ a cobrar</label>
+            <input
+              type="number" value={liquidMonto} onChange={(e) => setLiquidMonto(e.target.value)}
+              placeholder="Ej: 50, 100, 200..." min="0" autoFocus
+              className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-cyan-500 transition-all mb-3"
+            />
+            {liquidMonto && parseFloat(liquidMonto) > 0 && (
+              <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl px-4 py-2.5 mb-4 flex justify-between items-center">
+                <span className="text-zinc-400 text-sm">ML a dispensar:</span>
+                <span className="text-cyan-400 font-black text-lg">
+                  {Math.round((parseFloat(liquidMonto) / (liquidModal.precioPorMl || 1)) * 100) / 100} ml
+                </span>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={() => setLiquidModal(null)} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
+              <button
+                onClick={addLiquidToCart}
+                disabled={!liquidMonto || parseFloat(liquidMonto) <= 0}
+                className="flex-1 bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> Agregar al Carrito
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Product Card ──────────────────────────────────────────
+function ProductCard({ product, selectedNic, onSelectNic, onAdd, onPreview }) {
+  const nicLevels         = product.niveles_nicotina || [];
+  const isLowStock        = product.stock <= 5;
+  const isLiquidoDetallado = product.categoria === "Líquidos" && product.modoLiquido === "detallado";
+  const src               = imgSrc(product);
+
+  return (
+    <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl flex flex-col hover:border-orange-500/30 hover:bg-zinc-900/90 transition-all duration-200 group relative overflow-hidden">
+      {isLowStock && !isLiquidoDetallado && (
+        <div className="absolute top-2 right-2 z-10 bg-red-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">¡Pocas!</div>
+      )}
+      {isLiquidoDetallado && (
+        <div className="absolute top-2 left-2 z-10 bg-cyan-500/90 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">ML</div>
+      )}
+      <div className="aspect-square bg-zinc-800/60 rounded-t-2xl overflow-hidden cursor-pointer flex items-center justify-center" onClick={onPreview}>
+        {src ? (
+          <img src={src} alt={product.nombre} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" onError={(e) => { e.target.style.display = "none"; }} />
+        ) : (
+          <Package className="w-10 h-10 text-zinc-600 group-hover:text-orange-400 transition-colors" />
+        )}
+      </div>
+      <div className="p-3 flex flex-col gap-2 flex-1">
+        <div className="min-w-0">
+          <p className="text-[11px] text-zinc-500 font-medium truncate">{product.marca}</p>
+          <p className="text-sm font-bold text-white truncate leading-tight">{product.nombre}</p>
+          {isLiquidoDetallado ? (
+            <div className="mt-0.5">
+              <p className="text-cyan-400 font-black text-base">{formatCurrency(product.precioPorMl || 0)}<span className="text-xs font-normal text-zinc-500">/ml</span></p>
+              <p className="text-[10px] text-zinc-600">Stock: {product.stockMl || 0}ml</p>
+            </div>
+          ) : (
+            <>
+              <p className="text-orange-400 font-black text-base mt-0.5">{formatCurrency(product.precio)}</p>
+              <p className="text-[10px] text-zinc-600">Stock: {product.stock}</p>
+            </>
+          )}
+        </div>
+        {nicLevels.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {nicLevels.map((nic) => (
+              <button
+                key={nic} onClick={() => onSelectNic(nic)}
+                className={`text-[10px] px-2 py-0.5 rounded-full font-semibold transition-all duration-150 ${
+                  selectedNic === nic ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                }`}
+              >{nic}</button>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={onAdd}
+          className="mt-auto w-full bg-zinc-800 hover:bg-orange-500 text-zinc-400 hover:text-white rounded-xl py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-1.5"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          {isLiquidoDetallado ? "Ingresar Monto" : "Agregar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Cart Item ─────────────────────────────────────────────
+function CartItem({ item, onUpdate, onRemove }) {
+  const isLiquidoDetallado = item.esLiquidoDetallado;
+  return (
+    <div className="bg-zinc-900/60 border border-zinc-800/40 rounded-xl p-3 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <p className="text-white text-sm font-semibold truncate">{item.nombre}</p>
+        {item.nicotina && (
+          <span className="inline-block text-[10px] bg-orange-500/15 text-orange-400 border border-orange-500/20 px-1.5 py-0.5 rounded-full font-semibold mt-0.5">{item.nicotina}</span>
+        )}
+        {isLiquidoDetallado ? (
+          <div className="mt-0.5">
+            <p className="text-cyan-400 text-xs font-bold">{item.mlAmount} ml</p>
+            <p className="text-zinc-500 text-xs">{formatCurrency(item.precioPorMl)}/ml</p>
+          </div>
+        ) : (
+          <p className="text-zinc-500 text-xs mt-0.5">{formatCurrency(item.precio)} / u</p>
+        )}
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        {isLiquidoDetallado ? (
+          <button onClick={() => onRemove(item.key)} className="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-red-500/20 text-zinc-600 hover:text-red-400 flex items-center justify-center transition-colors">
+            <Trash2 className="w-3 h-3" />
+          </button>
+        ) : (
+          <>
+            <button onClick={() => onUpdate(item.key, -1)} className="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white flex items-center justify-center transition-colors"><Minus className="w-3 h-3" /></button>
+            <span className="text-white font-bold text-sm w-5 text-center">{item.qty}</span>
+            <button onClick={() => onUpdate(item.key,  1)} className="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-orange-500 text-zinc-400 hover:text-white flex items-center justify-center transition-colors"><Plus className="w-3 h-3" /></button>
+            <button onClick={() => onRemove(item.key)} className="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-red-500/20 text-zinc-600 hover:text-red-400 flex items-center justify-center transition-colors ml-1"><Trash2 className="w-3 h-3" /></button>
+          </>
+        )}
+      </div>
+      <p className="text-orange-400 font-bold text-sm shrink-0 w-16 text-right">
+        {isLiquidoDetallado ? formatCurrency(item.montoRD) : formatCurrency(item.precio * item.qty)}
+      </p>
+    </div>
+  );
+}
+
+// ─── Sale Modal ────────────────────────────────────────────
+function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, setAmountPaid, change, onConfirm, onClose, processing, error }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-white font-bold text-lg">Confirmar Venta</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+        </div>
+
+        {/* Resumen del carrito */}
+        <div className="bg-zinc-900/60 rounded-xl p-3 mb-4 space-y-1.5 max-h-40 overflow-y-auto">
+          {cart.map((item) => (
+            <div key={item.key} className="flex justify-between text-sm">
+              <span className="text-zinc-400">
+                {item.esLiquidoDetallado ? (
+                  <>{item.nombre}<span className="text-cyan-400 text-xs ml-1">({item.mlAmount}ml)</span></>
+                ) : (
+                  <>{item.qty}× {item.nombre}{item.nicotina && <span className="text-orange-400 text-xs ml-1">({item.nicotina})</span>}</>
+                )}
+              </span>
+              <span className="text-white font-medium">
+                {item.esLiquidoDetallado ? formatCurrency(item.montoRD) : formatCurrency(item.precio * item.qty)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Total */}
+        <div className="flex justify-between items-center mb-5 bg-orange-500/10 border border-orange-500/20 rounded-xl px-4 py-3">
+          <span className="text-orange-300 font-semibold">Total a Cobrar</span>
+          <span className="text-orange-400 font-black text-2xl">{formatCurrency(total)}</span>
+        </div>
+
+        {/* Método de pago */}
+        <div className="mb-4">
+          <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Método de Pago</p>
+          <div className="grid grid-cols-3 gap-2">
+            {["efectivo", "tarjeta", "transferencia"].map((m) => (
+              <button
+                key={m} onClick={() => setPaymentMethod(m)}
+                className={`py-2 px-3 rounded-xl text-xs font-bold capitalize transition-all ${
+                  paymentMethod === m ? "bg-orange-500 text-white shadow-lg shadow-orange-500/30" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                }`}
+              >{m}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Calculadora de cambio */}
+        {paymentMethod === "efectivo" && (
+          <div className="mb-5 space-y-2">
+            <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Monto Recibido</p>
+            <input
+              type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)}
+              placeholder="0.00"
+              className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all"
+            />
+            {amountPaid && (
+              <div className={`flex justify-between px-4 py-2.5 rounded-xl ${change >= 0 ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
+                <span className={`text-sm font-semibold ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>Cambio</span>
+                <span className={`font-black ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(change >= 0 ? change : 0)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 mb-4">
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <p className="text-red-400 text-sm">{error}</p>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
+          <button
+            onClick={onConfirm}
+            disabled={processing || (paymentMethod === "efectivo" && amountPaid && change < 0)}
+            className="flex-1 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/30 flex items-center justify-center gap-2"
+          >
+            {processing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Confirmar</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Product Detail Modal ──────────────────────────────────
+function ProductDetailModal({ product, onClose, onAdd }) {
+  const [nic, setNic] = useState(product.niveles_nicotina?.[0] || null);
+  const src = imgSrc(product);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-4 right-4 text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+        <div className="aspect-video bg-zinc-900/60 rounded-xl flex items-center justify-center mb-4 overflow-hidden">
+          {src ? (
+            <img src={src} alt={product.nombre} className="w-full h-full object-cover" onError={(e) => e.target.style.display = "none"} />
+          ) : (
+            <Package className="w-14 h-14 text-zinc-700" />
+          )}
+        </div>
+        <p className="text-zinc-500 text-xs font-semibold mb-0.5">{product.marca}</p>
+        <h3 className="text-white font-black text-xl mb-1">{product.nombre}</h3>
+        <p className="text-orange-400 font-black text-2xl mb-3">{formatCurrency(product.precio)}</p>
+        {product.descripcion && <p className="text-zinc-400 text-sm mb-4">{product.descripcion}</p>}
+        <div className="flex justify-between text-sm mb-4">
+          <span className="text-zinc-500">Categoría: <span className="text-zinc-300">{product.categoria}</span></span>
+          <span className={`font-semibold ${product.stock <= 5 ? "text-red-400" : "text-emerald-400"}`}>Stock: {product.stock}</span>
+        </div>
+        {product.niveles_nicotina?.length > 0 && (
+          <div className="mb-4">
+            <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Nicotina</p>
+            <div className="flex flex-wrap gap-2">
+              {product.niveles_nicotina.map((n) => (
+                <button key={n} onClick={() => setNic(n)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${nic === n ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <button onClick={() => onAdd(nic)}
+          className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/30 flex items-center justify-center gap-2">
+          <Plus className="w-4 h-4" /> Agregar al Carrito
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// DASHBOARD VIEW — Gráficas SVG puras (sin recharts)
+// ============================================================
+function DashboardView({ products, sales: salesToday }) {
+  const [period,    setPeriod]    = useState("week"); // today | week | month
+  const [salesData, setSalesData] = useState([]);
+  const [loading,   setLoading]   = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const fetcher =
+      period === "today" ? getSalesToday  :
+      period === "week"  ? getSalesThisWeek :
+                           getSalesThisMonth;
+    fetcher()
+      .then(setSalesData)
+      .finally(() => setLoading(false));
+  }, [period]);
+
+  const chartData  = groupSalesByDay(salesData);
+  const byMethod   = salesByMethod(salesData);
+  const totalSales = sumSales(salesData);
+  const avgTicket  = salesData.length > 0 ? totalSales / salesData.length : 0;
+
+  const lowStock  = products.filter((p) => p.stock > 0  && p.stock <= 5);
+  const outStock  = products.filter((p) => p.stock === 0);
+
+  const kpis = [
+    { label: "Total Ventas",    value: formatCurrency(totalSales), icon: DollarSign,  color: "orange", sub: `${salesData.length} transacciones` },
+    { label: "Ticket Promedio", value: formatCurrency(avgTicket),  icon: TrendingUp,  color: "blue",   sub: "Por venta" },
+    { label: "Stock Bajo",      value: lowStock.length,            icon: AlertTriangle,color: "yellow", sub: "Productos ≤ 5 unidades" },
+    { label: "Sin Stock",       value: outStock.length,            icon: Package,      color: "red",    sub: "Agotados" },
+  ];
+
+  const colorMap = {
+    orange: { bg: "bg-orange-500/10", border: "border-orange-500/20", icon: "text-orange-400", text: "text-orange-400" },
+    blue:   { bg: "bg-blue-500/10",   border: "border-blue-500/20",   icon: "text-blue-400",   text: "text-blue-400"   },
+    yellow: { bg: "bg-yellow-500/10", border: "border-yellow-500/20", icon: "text-yellow-400", text: "text-yellow-400" },
+    red:    { bg: "bg-red-500/10",    border: "border-red-500/20",    icon: "text-red-400",    text: "text-red-400"    },
+  };
+
+  return (
+    <div className="p-4 lg:p-6 max-w-7xl mx-auto space-y-6">
+      {/* Header + selector de período */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-white font-black text-2xl">Dashboard</h2>
+          <p className="text-zinc-500 text-sm mt-0.5 flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5" />
+            {new Date().toLocaleDateString("es-DO", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          {[
+            { id: "today", label: "Hoy"       },
+            { id: "week",  label: "Semana"     },
+            { id: "month", label: "Este Mes"   },
+          ].map(({ id, label }) => (
+            <button
+              key={id} onClick={() => setPeriod(id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                period === id ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+              }`}
+            >{label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
+        {kpis.map(({ label, value, icon: Icon, color, sub }) => {
+          const c = colorMap[color];
+          return (
+            <div key={label} className={`bg-zinc-900/60 border rounded-2xl p-4 lg:p-5 ${c.border}`}>
+              <div className="flex items-start justify-between mb-3">
+                <div className={`w-10 h-10 rounded-xl ${c.bg} border ${c.border} flex items-center justify-center`}>
+                  <Icon className={`w-5 h-5 ${c.icon}`} />
+                </div>
+                <ArrowUpRight className="w-4 h-4 text-zinc-700" />
+              </div>
+              <p className={`text-2xl lg:text-3xl font-black ${c.text} leading-none mb-1`}>{value}</p>
+              <p className="text-white font-semibold text-sm">{label}</p>
+              <p className="text-zinc-600 text-xs mt-0.5">{sub}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Gráfica de barras SVG + Métodos de pago */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Barras: ventas por día */}
+        <div className="lg:col-span-2 bg-zinc-900/60 border border-zinc-800/60 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Activity className="w-4 h-4 text-orange-400" />
+            <span className="text-white font-bold text-sm">Ventas por día</span>
+            {loading && <RefreshCw className="w-3 h-3 text-zinc-500 animate-spin ml-auto" />}
+          </div>
+          <BarChartSVG data={chartData} />
+        </div>
+
+        {/* Métodos de pago */}
+        <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Tag className="w-4 h-4 text-orange-400" />
+            <span className="text-white font-bold text-sm">Por método de pago</span>
+          </div>
+          {totalSales === 0 ? (
+            <div className="flex items-center justify-center h-32 text-zinc-700 text-sm">Sin datos</div>
+          ) : (
+            <div className="space-y-3 mt-2">
+              {[
+                { label: "Efectivo",       value: byMethod.efectivo,       color: "#22c55e" },
+                { label: "Tarjeta",        value: byMethod.tarjeta,        color: "#3b82f6" },
+                { label: "Transferencia",  value: byMethod.transferencia,  color: "#a855f7" },
+              ].map(({ label, value, color }) => {
+                const pct = totalSales > 0 ? Math.round((value / totalSales) * 100) : 0;
+                return (
+                  <div key={label}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-zinc-400">{label}</span>
+                      <span className="text-white font-semibold">{formatCurrency(value)}</span>
+                    </div>
+                    <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+                    </div>
+                    <p className="text-zinc-600 text-[10px] mt-0.5">{pct}% del total</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="border-t border-zinc-800/60 mt-4 pt-3 flex justify-between">
+            <span className="text-zinc-400 text-xs">Total período</span>
+            <span className="text-orange-400 font-black text-sm">{formatCurrency(totalSales)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Ventas recientes + alertas de inventario */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Ventas recientes */}
+        <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShoppingBag className="w-4 h-4 text-orange-400" />
+              <span className="text-white font-bold text-sm">Ventas Recientes (hoy)</span>
+            </div>
+            <span className="text-zinc-500 text-xs">{salesToday.length} hoy</span>
+          </div>
+          <div className="divide-y divide-zinc-800/40">
+            {salesToday.length === 0 ? (
+              <p className="text-zinc-600 text-sm text-center py-8">Sin ventas hoy</p>
+            ) : (
+              salesToday.slice(0, 8).map((sale) => (
+                <div key={sale.id} className="px-4 py-3 flex items-center justify-between hover:bg-zinc-800/20 transition-colors">
+                  <div>
+                    <p className="text-white text-sm font-medium">{sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}</p>
+                    <p className="text-zinc-500 text-xs capitalize">{sale.metodoPago} · {sale.cajero?.split("@")[0]}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-orange-400 font-bold">{formatCurrency(sale.total)}</p>
+                    <p className="text-zinc-600 text-xs">
+                      {sale.fecha?.toDate?.()?.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Alertas de inventario */}
+        <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-yellow-400" />
+              <span className="text-white font-bold text-sm">Alertas de Inventario</span>
+            </div>
+            <span className="text-zinc-500 text-xs">{lowStock.length + outStock.length} alertas</span>
+          </div>
+          <div className="divide-y divide-zinc-800/40">
+            {[...outStock, ...lowStock].length === 0 ? (
+              <div className="flex flex-col items-center py-8 gap-2">
+                <Check className="w-6 h-6 text-emerald-400" />
+                <p className="text-zinc-600 text-sm">Inventario en orden</p>
+              </div>
+            ) : (
+              [...outStock, ...lowStock].slice(0, 8).map((p) => (
+                <div key={p.id} className="px-4 py-3 flex items-center justify-between hover:bg-zinc-800/20 transition-colors">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-2 h-2 rounded-full ${p.stock === 0 ? "bg-red-400" : "bg-yellow-400"}`} />
+                    <div>
+                      <p className="text-white text-sm font-medium">{p.nombre}</p>
+                      <p className="text-zinc-500 text-xs">{p.categoria} · {p.marca}</p>
+                    </div>
+                  </div>
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                    p.stock === 0
+                      ? "bg-red-500/15 text-red-400 border border-red-500/20"
+                      : "bg-yellow-500/15 text-yellow-400 border border-yellow-500/20"
+                  }`}>
+                    {p.stock === 0 ? "Agotado" : `${p.stock} ud.`}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Gráfica de barras SVG pura ────────────────────────────
+function BarChartSVG({ data }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-40 text-zinc-700 text-sm">
+        Sin datos para este período
+      </div>
+    );
+  }
+
+  const W = 600, H = 180, PAD_L = 60, PAD_B = 32, PAD_T = 10, PAD_R = 10;
+  const chartW = W - PAD_L - PAD_R;
+  const chartH = H - PAD_B - PAD_T;
+
+  const maxVal = Math.max(...data.map((d) => d.total), 1);
+  const barW   = Math.min(40, (chartW / data.length) * 0.6);
+  const gap    = chartW / data.length;
+
+  // Líneas guía horizontales
+  const guides = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
+    y:     PAD_T + chartH * (1 - f),
+    label: formatCurrency(maxVal * f),
+  }));
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto" }}>
+      {/* Líneas guía */}
+      {guides.map(({ y, label }) => (
+        <g key={y}>
+          <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke="#27272a" strokeWidth="1" />
+          <text x={PAD_L - 6} y={y + 4} fontSize="9" fill="#52525b" textAnchor="end">{label}</text>
+        </g>
+      ))}
+
+      {/* Barras */}
+      {data.map((d, i) => {
+        const barH = Math.max(2, (d.total / maxVal) * chartH);
+        const x    = PAD_L + gap * i + gap / 2 - barW / 2;
+        const y    = PAD_T + chartH - barH;
+        const label = d.fecha.slice(5); // MM-DD
+
+        return (
+          <g key={d.fecha}>
+            {/* Barra con gradiente naranja */}
+            <defs>
+              <linearGradient id={`bar-${i}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stopColor="#f97316" />
+                <stop offset="100%" stopColor="#c2410c" />
+              </linearGradient>
+            </defs>
+            <rect
+              x={x} y={y} width={barW} height={barH}
+              fill={`url(#bar-${i})`} rx="4"
+              style={{ opacity: 0.9 }}
+            />
+            {/* Valor encima */}
+            {d.total > 0 && (
+              <text x={x + barW / 2} y={y - 4} fontSize="8" fill="#fb923c" textAnchor="middle">
+                {d.total >= 1000 ? `${(d.total / 1000).toFixed(1)}k` : d.total}
+              </text>
+            )}
+            {/* Etiqueta de fecha */}
+            <text x={x + barW / 2} y={H - 4} fontSize="9" fill="#71717a" textAnchor="middle">{label}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ============================================================
+// INVENTORY VIEW — CRUD con Base64 para imágenes
+// ============================================================
+const EMPTY_PRODUCT = {
+  nombre: "", marca: "", categoria: "Desechables",
+  precio: "", stock: "", descripcion: "", niveles_nicotina: [],
+  imageBase64: "", imageUrl: "",
+  modoLiquido: "botella", precioPorMl: "", stockMl: "",
+};
+
+function InventoryView({ products }) {
+  const [search,       setSearch]       = useState("");
+  const [showForm,     setShowForm]     = useState(false);
+  const [formProduct,  setFormProduct]  = useState(null);
+  const [form,         setForm]         = useState(EMPTY_PRODUCT);
+  const [nicInput,     setNicInput]     = useState("");
+  const [saving,       setSaving]       = useState(false);
+  const [saveError,    setSaveError]    = useState("");
+  const [imgPreview,   setImgPreview]   = useState("");
+  const [imgError,     setImgError]     = useState("");
+  const fileInputRef = useRef(null);
+
+  const filtered = products.filter(
+    (p) =>
+      p.nombre?.toLowerCase().includes(search.toLowerCase()) ||
+      p.marca?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  // ── Abrir formulario ──
+  const openNew = () => {
+    setFormProduct(null);
+    setForm(EMPTY_PRODUCT);
+    setNicInput("");
+    setImgPreview("");
+    setImgError("");
+    setSaveError("");
+    setShowForm(true);
+  };
+
+  const openEdit = (p) => {
+    setFormProduct(p);
+    setForm({
+      nombre:           p.nombre || "",
+      marca:            p.marca  || "",
+      categoria:        p.categoria || "Desechables",
+      precio:           String(p.precio || ""),
+      stock:            String(p.stock  || ""),
+      descripcion:      p.descripcion || "",
+      niveles_nicotina: p.niveles_nicotina || [],
+      imageBase64:      p.imageBase64 || "",
+      imageUrl:         p.imageUrl    || "",
+      modoLiquido:      p.modoLiquido || "botella",
+      precioPorMl:      String(p.precioPorMl || ""),
+      stockMl:          String(p.stockMl     || ""),
+    });
+    setImgPreview(p.imageBase64 || p.imageUrl || "");
+    setImgError("");
+    setSaveError("");
+    setNicInput("");
+    setShowForm(true);
+  };
+
+  const closeForm = () => { setShowForm(false); setSaveError(""); };
+
+  // ── Manejo de imagen Base64 ──
+  const handleImageFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1_500_000) {
+      setImgError("La imagen debe pesar menos de 1.5 MB.");
+      return;
+    }
+    setImgError("");
+    try {
+      const base64 = await fileToBase64(file);
+      setForm((f) => ({ ...f, imageBase64: base64, imageUrl: "" }));
+      setImgPreview(base64);
+    } catch {
+      setImgError("No se pudo leer la imagen.");
+    }
+  };
+
+  // ── Guardar producto (nuevo o edición) — retorna success ──
+  const handleSave = async () => {
+    if (!form.nombre || !form.precio) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      let result;
+      if (formProduct) {
+        result = await updateProduct(formProduct.id, form);
+      } else {
+        result = await addProduct(form);
+      }
+      // El modal se cierra solo si result.success === true
+      if (result.success) {
+        closeForm();   // ← cierra y resetea
+      }
+    } catch (err) {
+      setSaveError(err.message || "Error al guardar el producto.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Eliminar ──
+  const handleDelete = async (id) => {
+    if (!window.confirm("¿Eliminar este producto?")) return;
+    try {
+      await deleteProduct(id);
+    } catch (err) {
+      alert("Error al eliminar: " + err.message);
+    }
+  };
+
+  // ── Chips nicotina ──
+  const addNicChip = () => {
+    const v = nicInput.trim();
+    if (v && !form.niveles_nicotina.includes(v))
+      setForm((f) => ({ ...f, niveles_nicotina: [...f.niveles_nicotina, v] }));
+    setNicInput("");
+  };
+  const removeNicChip = (n) =>
+    setForm((f) => ({ ...f, niveles_nicotina: f.niveles_nicotina.filter((x) => x !== n) }));
+
+  return (
+    <div className="p-4 lg:p-6 max-w-7xl mx-auto space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-white font-black text-2xl">Inventario</h2>
+          <p className="text-zinc-500 text-sm mt-0.5">{products.length} productos registrados</p>
+        </div>
+        <button
+          onClick={openNew}
+          className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-bold px-4 py-2.5 rounded-xl text-sm transition-all shadow-lg shadow-orange-500/25 hover:-translate-y-0.5"
+        >
+          <Plus className="w-4 h-4" /> Agregar Producto
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+        <input
+          type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar producto..."
+          className="w-full bg-zinc-900 border border-zinc-800 text-white placeholder-zinc-600 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all"
+        />
+      </div>
+
+      {/* Tabla */}
+      <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800/60">
+                {["", "Producto", "Marca", "Categoría", "Precio", "Stock", "Nicotina", "Estado", "Acciones"].map((h) => (
+                  <th key={h} className="text-left text-zinc-500 text-xs font-semibold uppercase tracking-wider px-4 py-3">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800/30">
+              {filtered.length === 0 ? (
+                <tr><td colSpan={9} className="text-center text-zinc-600 py-12 text-sm">No hay productos. ¡Agrega el primero!</td></tr>
+              ) : (
+                filtered.map((p) => {
+                  const src          = imgSrc(p);
+                  const isDetallado  = p.modoLiquido === "detallado";
+                  const stockDisplay = isDetallado ? (p.stockMl || 0) : p.stock;
+                  const stockOk      = stockDisplay > 5;
+                  const stockLow     = stockDisplay > 0 && stockDisplay <= 5;
+
+                  return (
+                    <tr key={p.id} className="hover:bg-zinc-800/20 transition-colors">
+                      <td className="px-3 py-2 w-12">
+                        {src ? (
+                          <img src={src} alt={p.nombre} className="w-10 h-10 rounded-full object-cover border border-zinc-700" onError={(e) => e.target.style.display = "none"} />
+                        ) : (
+                          <div className="w-10 h-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                            <Package className="w-4 h-4 text-zinc-600" />
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-white font-medium">{p.nombre}</td>
+                      <td className="px-4 py-3 text-zinc-400">{p.marca}</td>
+                      <td className="px-4 py-3">
+                        <span className="bg-zinc-800 text-zinc-300 text-xs px-2 py-0.5 rounded-full">{p.categoria}</span>
+                      </td>
+                      <td className="px-4 py-3 text-orange-400 font-bold">{formatCurrency(p.precio)}</td>
+                      <td className="px-4 py-3 text-white font-semibold">
+                        {isDetallado ? (
+                          <span className="flex flex-col gap-0.5">
+                            <span className="text-cyan-400 font-bold text-sm">{p.stockMl || 0} ml</span>
+                            <span className="text-[10px] text-zinc-600">{formatCurrency(p.precioPorMl || 0)}/ml</span>
+                          </span>
+                        ) : p.stock}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {(p.niveles_nicotina || []).slice(0, 3).map((n) => (
+                            <span key={n} className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded-full">{n}</span>
+                          ))}
+                          {(p.niveles_nicotina || []).length > 3 && (
+                            <span className="text-[10px] text-zinc-600">+{p.niveles_nicotina.length - 3}</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                          stockDisplay === 0
+                            ? "bg-red-500/15 text-red-400 border border-red-500/20"
+                            : stockLow
+                            ? "bg-yellow-500/15 text-yellow-400 border border-yellow-500/20"
+                            : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                        }`}>
+                          {stockDisplay === 0 ? "Agotado" : stockLow ? "Bajo" : "OK"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => openEdit(p)} className="text-xs text-zinc-500 hover:text-orange-400 border border-zinc-700 hover:border-orange-500/40 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1">
+                            <Layers className="w-3 h-3" /> Editar
+                          </button>
+                          <button onClick={() => handleDelete(p.id)} className="text-xs text-zinc-600 hover:text-red-400 border border-zinc-800 hover:border-red-500/30 px-2 py-1 rounded-lg transition-all">
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ── MODAL: Agregar / Editar Producto ── */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={closeForm}>
+          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" />
+          <div
+            className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Cabecera del form */}
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-white font-black text-xl">{formProduct ? "Editar Producto" : "Nuevo Producto"}</h3>
+                <p className="text-zinc-500 text-xs mt-0.5">{formProduct ? "Modifica los datos" : "Completa la información"}</p>
+              </div>
+              <button onClick={closeForm} className="text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Nombre + Marca */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Nombre <span className="text-orange-500">*</span></label>
+                  <input type="text" value={form.nombre} onChange={(e) => setForm((f) => ({ ...f, nombre: e.target.value }))} placeholder="Ej: Vuse Go 700"
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all" />
+                </div>
+                <div>
+                  <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Marca</label>
+                  <input type="text" value={form.marca} onChange={(e) => setForm((f) => ({ ...f, marca: e.target.value }))} placeholder="Ej: Vuse"
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all" />
+                </div>
+              </div>
+
+              {/* ── INPUT DE IMAGEN BASE64 ── */}
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5 flex items-center gap-1.5">
+                  <Image className="w-3.5 h-3.5" /> Imagen del Producto
+                </label>
+                <div
+                  className="border-2 border-dashed border-zinc-700 hover:border-orange-500/50 rounded-xl p-4 cursor-pointer transition-all flex flex-col items-center gap-2 text-center"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {imgPreview ? (
+                    <img src={imgPreview} alt="preview" className="w-24 h-24 object-cover rounded-xl border border-zinc-600" />
+                  ) : (
+                    <>
+                      <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center">
+                        <Image className="w-5 h-5 text-zinc-500" />
+                      </div>
+                      <p className="text-zinc-500 text-xs">Haz clic para subir imagen</p>
+                      <p className="text-zinc-700 text-[10px]">PNG, JPG, WEBP · máx 1.5 MB</p>
+                    </>
+                  )}
+                </div>
+                <input
+                  ref={fileInputRef} type="file" accept="image/*"
+                  onChange={handleImageFile} className="hidden"
+                />
+                {imgPreview && (
+                  <button
+                    onClick={() => { setForm((f) => ({ ...f, imageBase64: "", imageUrl: "" })); setImgPreview(""); }}
+                    className="mt-1.5 text-xs text-zinc-600 hover:text-red-400 transition-colors"
+                  >
+                    × Quitar imagen
+                  </button>
+                )}
+                {imgError && <p className="text-red-400 text-xs mt-1">{imgError}</p>}
+              </div>
+
+              {/* Categoría */}
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Categoría</label>
+                <div className="flex flex-wrap gap-2">
+                  {CATS_FORM.map((c) => (
+                    <button
+                      key={c} type="button" onClick={() => setForm((f) => ({ ...f, categoria: c }))}
+                      className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+                        form.categoria === c ? "bg-orange-500 text-white shadow-lg shadow-orange-500/25" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                      }`}
+                    >{c}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Precio + Stock */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio (RD$) <span className="text-orange-500">*</span></label>
+                  <input type="number" value={form.precio} onChange={(e) => setForm((f) => ({ ...f, precio: e.target.value }))} placeholder="0.00" min="0"
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all" />
+                </div>
+                <div>
+                  <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Stock inicial</label>
+                  <input type="number" value={form.stock} onChange={(e) => setForm((f) => ({ ...f, stock: e.target.value }))} placeholder="0" min="0"
+                    className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all" />
+                </div>
+              </div>
+
+              {/* Modo Líquido */}
+              {form.categoria === "Líquidos" && (
+                <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4 space-y-3">
+                  <label className="text-cyan-400 text-xs font-semibold uppercase tracking-wider block">Modo de venta del líquido</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { id: "botella",  label: "🍾 Botella Cerrada", desc: "Se vende por unidad"      },
+                      { id: "detallado",label: "💧 Detallado (ML)",   desc: "Se vende por mililitros" },
+                    ].map(({ id, label, desc }) => (
+                      <button
+                        key={id} type="button" onClick={() => setForm((f) => ({ ...f, modoLiquido: id }))}
+                        className={`text-left px-3 py-2.5 rounded-xl border transition-all text-sm ${
+                          form.modoLiquido === id
+                            ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300"
+                            : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500"
+                        }`}
+                      >
+                        <div className="font-semibold text-xs">{label}</div>
+                        <div className="text-[10px] opacity-70 mt-0.5">{desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  {form.modoLiquido === "detallado" && (
+                    <div className="grid grid-cols-2 gap-3 mt-2">
+                      <div>
+                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio por ML (RD$)</label>
+                        <input type="number" value={form.precioPorMl} onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))} placeholder="0.00" min="0" step="0.01"
+                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                      </div>
+                      <div>
+                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Stock total (ML)</label>
+                        <input type="number" value={form.stockMl} onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))} placeholder="0" min="0"
+                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Descripción */}
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Descripción</label>
+                <textarea value={form.descripcion} onChange={(e) => setForm((f) => ({ ...f, descripcion: e.target.value }))}
+                  placeholder="Descripción opcional..." rows={2}
+                  className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all resize-none"
+                />
+              </div>
+
+              {/* Niveles de nicotina */}
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Niveles de Nicotina</label>
+                <div className="flex gap-2 mb-2">
+                  <input
+                    type="text" value={nicInput} onChange={(e) => setNicInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addNicChip())}
+                    placeholder="Ej: 3mg, 50mg, FREE..."
+                    className="flex-1 bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-orange-500/60 transition-all"
+                  />
+                  <button type="button" onClick={addNicChip} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl text-sm transition-colors">
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+                {/* Chips rápidos */}
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {NICOTINE_LEVELS.map((n) => (
+                    <button
+                      key={n} type="button"
+                      onClick={() => !form.niveles_nicotina.includes(n) && setForm((f) => ({ ...f, niveles_nicotina: [...f.niveles_nicotina, n] }))}
+                      className={`text-[11px] px-2 py-0.5 rounded-full border transition-all ${
+                        form.niveles_nicotina.includes(n)
+                          ? "bg-orange-500/20 border-orange-500/40 text-orange-400"
+                          : "bg-zinc-900 border-zinc-700 text-zinc-500 hover:border-zinc-500"
+                      }`}
+                    >{n}</button>
+                  ))}
+                </div>
+                {form.niveles_nicotina.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800">
+                    {form.niveles_nicotina.map((n) => (
+                      <span key={n} className="flex items-center gap-1 text-xs bg-orange-500/15 text-orange-400 border border-orange-500/25 px-2 py-0.5 rounded-full">
+                        {n}
+                        <button onClick={() => removeNicChip(n)} className="hover:text-red-400 transition-colors"><X className="w-3 h-3" /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Error al guardar */}
+            {saveError && (
+              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 mt-4">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <p className="text-red-400 text-sm">{saveError}</p>
+              </div>
+            )}
+
+            {/* Botones */}
+            <div className="flex gap-3 mt-6">
+              <button onClick={closeForm} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
+              <button
+                onClick={handleSave}
+                disabled={saving || !form.nombre || !form.precio}
+                className="flex-1 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
+              >
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" />{formProduct ? "Guardar Cambios" : "Crear Producto"}</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
