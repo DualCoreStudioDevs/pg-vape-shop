@@ -39,12 +39,12 @@ import {
 
 // ─── Firebase init ─────────────────────────────────────────
 const firebaseConfig = {
-  apiKey:            "AIzaSyB9kvPUvn0x-zHWgnHrsKhlwq_HKcBCiR4",
-  authDomain:        "pg-vape-shop.firebaseapp.com",
-  projectId:         "pg-vape-shop",
-  storageBucket:     "pg-vape-shop.firebasestorage.app",
-  messagingSenderId: "611196230742",
-  appId:             "1:611196230742:web:8dd4322fbf2890b1672ff7",
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 const app  = initializeApp(firebaseConfig);
 const db   = getFirestore(app);
