@@ -32,6 +32,10 @@ import {
   getSalesToday,
   getSalesThisWeek,
   getSalesThisMonth,
+  getSalesByDate,
+  getTopProducts,
+  getVentasFiadoPendientes,
+  marcarFiadoCobrado,
   sumSales,
   groupSalesByDay,
   salesByMethod,
@@ -363,6 +367,7 @@ function MainApp({ user }) {
     { id: "pos",       label: "Punto de Venta", icon: ShoppingCart },
     { id: "dashboard", label: "Dashboard",       icon: BarChart3    },
     { id: "inventory", label: "Inventario",      icon: Package      },
+    { id: "fiado",     label: "Fiado",           icon: Clock        },
   ];
 
   return (
@@ -416,6 +421,8 @@ function MainApp({ user }) {
           <POSView products={products} sales={sales} user={user} />
         ) : view === "dashboard" ? (
           <DashboardView products={products} sales={sales} />
+        ) : view === "fiado" ? (
+          <FiadoView />
         ) : (
           <InventoryView products={products} />
         )}
@@ -441,6 +448,9 @@ function POSView({ products, sales, user }) {
   const [ticket,          setTicket]          = useState(null);   // datos del ticket a imprimir
   const [processing,      setProcessing]      = useState(false);
   const [saleError,       setSaleError]       = useState("");
+  const [fiadoMode,       setFiadoMode]       = useState(false);
+  const [fiadoNombre,     setFiadoNombre]     = useState("");
+  const [fiadoTelefono,   setFiadoTelefono]   = useState("");
 
   const filteredProducts = useMemo(() => products.filter((p) => {
     const matchSearch = p.nombre?.toLowerCase().includes(search.toLowerCase()) ||
@@ -494,33 +504,34 @@ function POSView({ products, sales, user }) {
   // ── Confirmar venta — usa completeSale de services.js ──────
   const confirmSale = async () => {
     setSaleError("");
+    if (fiadoMode) {
+      if (!fiadoNombre.trim()) { setSaleError("El nombre del cliente es obligatorio para fiar."); return; }
+      if (!fiadoTelefono.trim()) { setSaleError("El teléfono del cliente es obligatorio para fiar."); return; }
+    }
     setProcessing(true);
     try {
-      const result = await completeSale(
-        cart,
-        cartTotal,
-        paymentMethod,
-        user?.email ?? null
-      );
+      const method = fiadoMode ? "fiado" : paymentMethod;
+      const fiadoInfo = fiadoMode ? { nombre: fiadoNombre.trim(), telefono: fiadoTelefono.trim() } : null;
+      const result = await completeSale(cart, cartTotal, method, user?.email ?? null, fiadoInfo);
 
       if (result.success) {
-        // Datos para el ticket de impresión
         const ticketData = {
-          items:       cart,
-          total:       cartTotal,
-          metodoPago:  paymentMethod,
-          cajero:      user?.email,
-          cambio:      paymentMethod === "efectivo" && change > 0 ? change : 0,
-          ventaId:     result.ventaId,
+          items:      cart,
+          total:      cartTotal,
+          metodoPago: method,
+          cajero:     user?.email,
+          cambio:     !fiadoMode && paymentMethod === "efectivo" && change > 0 ? change : 0,
+          ventaId:    result.ventaId,
+          esVentaFiada: fiadoMode,
+          clienteNombre: fiadoMode ? fiadoNombre : null,
         };
-
-        // Cerrar modal de venta y resetear estado
         setSaleModal(false);
         setAmountPaid("");
         setPaymentMethod("efectivo");
+        setFiadoMode(false);
+        setFiadoNombre("");
+        setFiadoTelefono("");
         clearCart();
-
-        // Mostrar ticket imprimible
         setTicket(ticketData);
       }
     } catch (err) {
@@ -629,12 +640,20 @@ function POSView({ products, sales, user }) {
             <span className="text-orange-400 font-black text-xl">{formatCurrency(cartTotal)}</span>
           </div>
           <button
-            onClick={() => { setSaleError(""); setSaleModal(true); }}
+            onClick={() => { setSaleError(""); setFiadoMode(false); setSaleModal(true); }}
             disabled={cart.length === 0}
             className="w-full bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-30 disabled:cursor-not-allowed text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/20 hover:-translate-y-0.5 flex items-center justify-center gap-2"
           >
             <Zap className="w-4 h-4" />
             Cobrar {formatCurrency(cartTotal)}
+          </button>
+          <button
+            onClick={() => { setSaleError(""); setFiadoMode(true); setSaleModal(true); }}
+            disabled={cart.length === 0}
+            className="w-full bg-zinc-800 hover:bg-amber-500/20 border border-zinc-700 hover:border-amber-500/50 disabled:opacity-30 disabled:cursor-not-allowed text-amber-400 font-bold rounded-xl py-2.5 text-sm transition-all flex items-center justify-center gap-2"
+          >
+            <Clock className="w-4 h-4" />
+            Fiar
           </button>
         </div>
       </div>
@@ -650,9 +669,14 @@ function POSView({ products, sales, user }) {
           setAmountPaid={setAmountPaid}
           change={change}
           onConfirm={confirmSale}
-          onClose={() => { setSaleModal(false); setSaleError(""); }}
+          onClose={() => { setSaleModal(false); setSaleError(""); setFiadoMode(false); setFiadoNombre(""); setFiadoTelefono(""); }}
           processing={processing}
           error={saleError}
+          fiadoMode={fiadoMode}
+          fiadoNombre={fiadoNombre}
+          setFiadoNombre={setFiadoNombre}
+          fiadoTelefono={fiadoTelefono}
+          setFiadoTelefono={setFiadoTelefono}
         />
       )}
 
@@ -823,13 +847,15 @@ function CartItem({ item, onUpdate, onRemove }) {
 }
 
 // ─── Sale Modal ────────────────────────────────────────────
-function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, setAmountPaid, change, onConfirm, onClose, processing, error }) {
+function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, setAmountPaid, change, onConfirm, onClose, processing, error, fiadoMode, fiadoNombre, setFiadoNombre, fiadoTelefono, setFiadoTelefono }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
-          <h3 className="text-white font-bold text-lg">Confirmar Venta</h3>
+          <h3 className="text-white font-bold text-lg flex items-center gap-2">
+            {fiadoMode ? <><Clock className="w-5 h-5 text-amber-400" /> Registrar como Fiado</> : "Confirmar Venta"}
+          </h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
         </div>
 
@@ -852,42 +878,67 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
         </div>
 
         {/* Total */}
-        <div className="flex justify-between items-center mb-5 bg-orange-500/10 border border-orange-500/20 rounded-xl px-4 py-3">
-          <span className="text-orange-300 font-semibold">Total a Cobrar</span>
-          <span className="text-orange-400 font-black text-2xl">{formatCurrency(total)}</span>
+        <div className={`flex justify-between items-center mb-5 border rounded-xl px-4 py-3 ${fiadoMode ? "bg-amber-500/10 border-amber-500/20" : "bg-orange-500/10 border-orange-500/20"}`}>
+          <span className={`font-semibold ${fiadoMode ? "text-amber-300" : "text-orange-300"}`}>Total {fiadoMode ? "a Fiar" : "a Cobrar"}</span>
+          <span className={`font-black text-2xl ${fiadoMode ? "text-amber-400" : "text-orange-400"}`}>{formatCurrency(total)}</span>
         </div>
 
-        {/* Método de pago */}
-        <div className="mb-4">
-          <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Método de Pago</p>
-          <div className="grid grid-cols-3 gap-2">
-            {["efectivo", "tarjeta", "transferencia"].map((m) => (
-              <button
-                key={m} onClick={() => setPaymentMethod(m)}
-                className={`py-2 px-3 rounded-xl text-xs font-bold capitalize transition-all ${
-                  paymentMethod === m ? "bg-orange-500 text-white shadow-lg shadow-orange-500/30" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                }`}
-              >{m}</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Calculadora de cambio */}
-        {paymentMethod === "efectivo" && (
-          <div className="mb-5 space-y-2">
-            <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Monto Recibido</p>
+        {/* Fiado: datos del cliente */}
+        {fiadoMode ? (
+          <div className="space-y-3 mb-5 bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+            <p className="text-amber-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5" /> Datos del Cliente (Obligatorio)
+            </p>
             <input
-              type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)}
-              placeholder="0.00"
-              className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all"
+              type="text"
+              placeholder="Nombre completo *"
+              value={fiadoNombre}
+              onChange={(e) => setFiadoNombre(e.target.value)}
+              className="w-full bg-zinc-900 border border-amber-700/50 text-white placeholder-zinc-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
             />
-            {amountPaid && (
-              <div className={`flex justify-between px-4 py-2.5 rounded-xl ${change >= 0 ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
-                <span className={`text-sm font-semibold ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>Cambio</span>
-                <span className={`font-black ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(change >= 0 ? change : 0)}</span>
+            <input
+              type="tel"
+              placeholder="Teléfono *"
+              value={fiadoTelefono}
+              onChange={(e) => setFiadoTelefono(e.target.value)}
+              className="w-full bg-zinc-900 border border-amber-700/50 text-white placeholder-zinc-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
+            />
+          </div>
+        ) : (
+          <>
+            {/* Método de pago */}
+            <div className="mb-4">
+              <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-2">Método de Pago</p>
+              <div className="grid grid-cols-3 gap-2">
+                {["efectivo", "tarjeta", "transferencia"].map((m) => (
+                  <button
+                    key={m} onClick={() => setPaymentMethod(m)}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold capitalize transition-all ${
+                      paymentMethod === m ? "bg-orange-500 text-white shadow-lg shadow-orange-500/30" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                    }`}
+                  >{m}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Calculadora de cambio */}
+            {paymentMethod === "efectivo" && (
+              <div className="mb-5 space-y-2">
+                <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Monto Recibido</p>
+                <input
+                  type="number" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-white rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all"
+                />
+                {amountPaid && (
+                  <div className={`flex justify-between px-4 py-2.5 rounded-xl ${change >= 0 ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
+                    <span className={`text-sm font-semibold ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>Cambio</span>
+                    <span className={`font-black ${change >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(change >= 0 ? change : 0)}</span>
+                  </div>
+                )}
               </div>
             )}
-          </div>
+          </>
         )}
 
         {/* Error */}
@@ -902,10 +953,10 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
           <button onClick={onClose} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
           <button
             onClick={onConfirm}
-            disabled={processing || (paymentMethod === "efectivo" && amountPaid && change < 0)}
-            className="flex-1 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/30 flex items-center justify-center gap-2"
+            disabled={processing || (!fiadoMode && paymentMethod === "efectivo" && amountPaid && change < 0)}
+            className={`flex-1 ${fiadoMode ? "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-amber-500/30" : "bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 shadow-orange-500/30"} disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg flex items-center justify-center gap-2`}
           >
-            {processing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Confirmar</>}
+            {processing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" />{fiadoMode ? "Registrar Fiado" : "Confirmar"}</>}
           </button>
         </div>
       </div>
@@ -964,67 +1015,90 @@ function ProductDetailModal({ product, onClose, onAdd }) {
 // DASHBOARD VIEW — Gráficas SVG puras (sin recharts)
 // ============================================================
 function DashboardView({ products, sales: salesToday }) {
-  const [period,    setPeriod]    = useState("week"); // today | week | month
+  const [period,    setPeriod]    = useState("today");
   const [salesData, setSalesData] = useState([]);
   const [loading,   setLoading]   = useState(true);
+  // Calendar date picker
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [calMode, setCalMode] = useState(false); // false = período, true = fecha exacta
 
   useEffect(() => {
     setLoading(true);
-    const fetcher =
-      period === "today" ? getSalesToday  :
-      period === "week"  ? getSalesThisWeek :
-                           getSalesThisMonth;
-    fetcher()
-      .then(setSalesData)
-      .finally(() => setLoading(false));
-  }, [period]);
+    let fetcher;
+    if (calMode) {
+      const dateObj = new Date(selectedDate + "T12:00:00"); // evitar desfase de zona horaria
+      fetcher = () => getSalesByDate(dateObj);
+    } else {
+      fetcher = period === "today" ? getSalesToday : period === "week" ? getSalesThisWeek : getSalesThisMonth;
+    }
+    fetcher().then(setSalesData).finally(() => setLoading(false));
+  }, [period, calMode, selectedDate]);
 
   const chartData  = groupSalesByDay(salesData);
   const byMethod   = salesByMethod(salesData);
   const totalSales = sumSales(salesData);
   const avgTicket  = salesData.length > 0 ? totalSales / salesData.length : 0;
+  const topProds   = getTopProducts(salesData, 6);
 
   const lowStock  = products.filter((p) => p.stock > 0  && p.stock <= 5);
   const outStock  = products.filter((p) => p.stock === 0);
 
   const kpis = [
-    { label: "Total Ventas",    value: formatCurrency(totalSales), icon: DollarSign,  color: "orange", sub: `${salesData.length} transacciones` },
-    { label: "Ticket Promedio", value: formatCurrency(avgTicket),  icon: TrendingUp,  color: "blue",   sub: "Por venta" },
-    { label: "Stock Bajo",      value: lowStock.length,            icon: AlertTriangle,color: "yellow", sub: "Productos ≤ 5 unidades" },
-    { label: "Sin Stock",       value: outStock.length,            icon: Package,      color: "red",    sub: "Agotados" },
+    { label: "Total Ventas",    value: formatCurrency(totalSales),     icon: DollarSign,   color: "orange", sub: `${salesData.length} transacciones` },
+    { label: "Ticket Promedio", value: formatCurrency(avgTicket),       icon: TrendingUp,   color: "blue",   sub: "Por venta" },
+    { label: "Fiado",           value: formatCurrency(byMethod.fiado), icon: Clock,        color: "amber",  sub: "Pendiente de cobro" },
+    { label: "Sin Stock",       value: outStock.length,                 icon: Package,      color: "red",    sub: "Agotados" },
   ];
 
   const colorMap = {
     orange: { bg: "bg-orange-500/10", border: "border-orange-500/20", icon: "text-orange-400", text: "text-orange-400" },
     blue:   { bg: "bg-blue-500/10",   border: "border-blue-500/20",   icon: "text-blue-400",   text: "text-blue-400"   },
-    yellow: { bg: "bg-yellow-500/10", border: "border-yellow-500/20", icon: "text-yellow-400", text: "text-yellow-400" },
+    amber:  { bg: "bg-amber-500/10",  border: "border-amber-500/20",  icon: "text-amber-400",  text: "text-amber-400"  },
     red:    { bg: "bg-red-500/10",    border: "border-red-500/20",    icon: "text-red-400",    text: "text-red-400"    },
   };
 
+  const displayLabel = calMode
+    ? new Date(selectedDate + "T12:00:00").toLocaleDateString("es-DO", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
+    : new Date().toLocaleDateString("es-DO", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
   return (
     <div className="p-4 lg:p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header + selector de período */}
+      {/* Header + selectores */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-white font-black text-2xl">Dashboard</h2>
           <p className="text-zinc-500 text-sm mt-0.5 flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5" />
-            {new Date().toLocaleDateString("es-DO", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+            <Clock className="w-3.5 h-3.5" />{displayLabel}
           </p>
         </div>
-        <div className="flex gap-2">
-          {[
-            { id: "today", label: "Hoy"       },
-            { id: "week",  label: "Semana"     },
-            { id: "month", label: "Este Mes"   },
-          ].map(({ id, label }) => (
-            <button
-              key={id} onClick={() => setPeriod(id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                period === id ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-              }`}
-            >{label}</button>
-          ))}
+        <div className="flex flex-wrap gap-2 items-center">
+          {/* Date picker */}
+          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-1.5">
+            <Calendar className="w-4 h-4 text-zinc-400 shrink-0" />
+            <input
+              type="date"
+              value={selectedDate}
+              max={todayStr}
+              onChange={(e) => { setSelectedDate(e.target.value); setCalMode(true); }}
+              className="bg-transparent text-white text-xs focus:outline-none cursor-pointer"
+            />
+          </div>
+          {/* Período rápido */}
+          <div className="flex gap-1">
+            {[
+              { id: "today", label: "Hoy"      },
+              { id: "week",  label: "Semana"    },
+              { id: "month", label: "Mes"       },
+            ].map(({ id, label }) => (
+              <button
+                key={id} onClick={() => { setPeriod(id); setCalMode(false); setSelectedDate(todayStr); }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  !calMode && period === id ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                }`}
+              >{label}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1048,9 +1122,8 @@ function DashboardView({ products, sales: salesToday }) {
         })}
       </div>
 
-      {/* Gráfica de barras SVG + Métodos de pago */}
+      {/* Gráfica + Métodos de pago */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Barras: ventas por día */}
         <div className="lg:col-span-2 bg-zinc-900/60 border border-zinc-800/60 rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-4">
             <Activity className="w-4 h-4 text-orange-400" />
@@ -1060,7 +1133,6 @@ function DashboardView({ products, sales: salesToday }) {
           <BarChartSVG data={chartData} />
         </div>
 
-        {/* Métodos de pago */}
         <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-4">
             <Tag className="w-4 h-4 text-orange-400" />
@@ -1071,9 +1143,10 @@ function DashboardView({ products, sales: salesToday }) {
           ) : (
             <div className="space-y-3 mt-2">
               {[
-                { label: "Efectivo",       value: byMethod.efectivo,       color: "#22c55e" },
-                { label: "Tarjeta",        value: byMethod.tarjeta,        color: "#3b82f6" },
-                { label: "Transferencia",  value: byMethod.transferencia,  color: "#a855f7" },
+                { label: "Efectivo",      value: byMethod.efectivo,      color: "#22c55e" },
+                { label: "Tarjeta",       value: byMethod.tarjeta,       color: "#3b82f6" },
+                { label: "Transferencia", value: byMethod.transferencia,  color: "#a855f7" },
+                { label: "Fiado",         value: byMethod.fiado,         color: "#f59e0b" },
               ].map(({ label, value, color }) => {
                 const pct = totalSales > 0 ? Math.round((value / totalSales) * 100) : 0;
                 return (
@@ -1098,14 +1171,39 @@ function DashboardView({ products, sales: salesToday }) {
         </div>
       </div>
 
-      {/* Ventas recientes + alertas de inventario */}
+      {/* Top productos + ventas recientes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Top productos */}
+        <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center gap-2">
+            <Flame className="w-4 h-4 text-orange-400" />
+            <span className="text-white font-bold text-sm">Productos más vendidos</span>
+          </div>
+          <div className="divide-y divide-zinc-800/40">
+            {topProds.length === 0 ? (
+              <p className="text-zinc-600 text-sm text-center py-8">Sin datos</p>
+            ) : topProds.map((p, i) => (
+              <div key={p.productId} className="px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/20 transition-colors">
+                <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${i === 0 ? "bg-orange-500/30 text-orange-400" : i === 1 ? "bg-zinc-600/50 text-zinc-400" : "bg-zinc-800 text-zinc-500"}`}>{i+1}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium truncate">{p.productName}</p>
+                  <p className="text-zinc-500 text-xs">{p.marca}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-orange-400 font-bold text-sm">{formatCurrency(p.totalRD)}</p>
+                  <p className="text-zinc-600 text-xs">{p.totalQty > 0 ? `${p.totalQty} ud.` : `${p.totalML}ml`}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Ventas recientes */}
         <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
           <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <ShoppingBag className="w-4 h-4 text-orange-400" />
-              <span className="text-white font-bold text-sm">Ventas Recientes (hoy)</span>
+              <span className="text-white font-bold text-sm">Ventas recientes</span>
             </div>
             <span className="text-zinc-500 text-xs">{salesToday.length} hoy</span>
           </div>
@@ -1116,7 +1214,10 @@ function DashboardView({ products, sales: salesToday }) {
               salesToday.slice(0, 8).map((sale) => (
                 <div key={sale.id} className="px-4 py-3 flex items-center justify-between hover:bg-zinc-800/20 transition-colors">
                   <div>
-                    <p className="text-white text-sm font-medium">{sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}</p>
+                    <p className="text-white text-sm font-medium flex items-center gap-1.5">
+                      {sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}
+                      {sale.esVentaFiada && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full">Fiado</span>}
+                    </p>
                     <p className="text-zinc-500 text-xs capitalize">{sale.metodoPago} · {sale.cajero?.split("@")[0]}</p>
                   </div>
                   <div className="text-right">
@@ -1130,45 +1231,143 @@ function DashboardView({ products, sales: salesToday }) {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
 
-        {/* Alertas de inventario */}
-        <div className="bg-zinc-900/60 border border-zinc-800/60 rounded-2xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-zinc-800/60 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-yellow-400" />
-              <span className="text-white font-bold text-sm">Alertas de Inventario</span>
-            </div>
-            <span className="text-zinc-500 text-xs">{lowStock.length + outStock.length} alertas</span>
+// ============================================================
+// FIADO VIEW — Cuentas por Cobrar
+// ============================================================
+function FiadoView() {
+  const [fiados,   setFiados]   = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [marking,  setMarking]  = useState(null);
+  const [search,   setSearch]   = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await getVentasFiadoPendientes();
+      setFiados(data);
+    } catch(err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleCobrar = async (id) => {
+    if (!window.confirm("¿Marcar esta deuda como cobrada?")) return;
+    setMarking(id);
+    try {
+      await marcarFiadoCobrado(id);
+      setFiados((prev) => prev.filter((f) => f.id !== id));
+    } catch(err) { alert("Error: " + err.message); }
+    finally { setMarking(null); }
+  };
+
+  const totalPendiente = fiados.reduce((s, f) => s + (Number(f.total)||0), 0);
+
+  const filtered = fiados.filter((f) =>
+    (f.clienteNombre || "").toLowerCase().includes(search.toLowerCase()) ||
+    (f.clienteTelefono || "").includes(search)
+  );
+
+  return (
+    <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-white font-black text-2xl flex items-center gap-2">
+            <Clock className="w-6 h-6 text-amber-400" /> Cuentas por Cobrar
+          </h2>
+          <p className="text-zinc-500 text-sm mt-0.5">{fiados.length} deudas pendientes</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-2.5 text-center">
+            <p className="text-xs text-amber-400 font-semibold uppercase tracking-wider">Total Pendiente</p>
+            <p className="text-amber-400 font-black text-xl">{formatCurrency(totalPendiente)}</p>
           </div>
-          <div className="divide-y divide-zinc-800/40">
-            {[...outStock, ...lowStock].length === 0 ? (
-              <div className="flex flex-col items-center py-8 gap-2">
-                <Check className="w-6 h-6 text-emerald-400" />
-                <p className="text-zinc-600 text-sm">Inventario en orden</p>
-              </div>
-            ) : (
-              [...outStock, ...lowStock].slice(0, 8).map((p) => (
-                <div key={p.id} className="px-4 py-3 flex items-center justify-between hover:bg-zinc-800/20 transition-colors">
-                  <div className="flex items-center gap-2.5">
-                    <div className={`w-2 h-2 rounded-full ${p.stock === 0 ? "bg-red-400" : "bg-yellow-400"}`} />
-                    <div>
-                      <p className="text-white text-sm font-medium">{p.nombre}</p>
-                      <p className="text-zinc-500 text-xs">{p.categoria} · {p.marca}</p>
-                    </div>
-                  </div>
-                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                    p.stock === 0
-                      ? "bg-red-500/15 text-red-400 border border-red-500/20"
-                      : "bg-yellow-500/15 text-yellow-400 border border-yellow-500/20"
-                  }`}>
-                    {p.stock === 0 ? "Agotado" : `${p.stock} ud.`}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
+          <button onClick={load} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 p-2.5 rounded-xl transition-colors">
+            <RefreshCw className="w-4 h-4" />
+          </button>
         </div>
       </div>
+
+      {/* Búsqueda */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+        <input
+          type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar por nombre o teléfono..."
+          className="w-full bg-zinc-900 border border-zinc-800 text-white placeholder-zinc-600 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/50 transition-all"
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-16"><RefreshCw className="w-6 h-6 text-amber-400 animate-spin" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center py-16 gap-3">
+          <Check className="w-12 h-12 text-emerald-400 opacity-50" />
+          <p className="text-zinc-500 text-sm">{search ? "Sin resultados" : "¡No hay deudas pendientes! 🎉"}</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((f) => {
+            const fecha = f.fecha?.toDate?.() ?? new Date(f.fechaISO);
+            return (
+              <div key={f.id} className="bg-zinc-900/60 border border-amber-500/20 rounded-2xl p-4 hover:border-amber-500/40 transition-all">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  {/* Info cliente */}
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/25 flex items-center justify-center shrink-0">
+                      <User className="w-5 h-5 text-amber-400" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-white font-bold truncate">{f.clienteNombre || "—"}</p>
+                      <p className="text-zinc-400 text-sm">{f.clienteTelefono || "Sin teléfono"}</p>
+                    </div>
+                  </div>
+
+                  {/* Productos */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-zinc-400 text-xs font-semibold mb-1 uppercase tracking-wider">Productos fiados</p>
+                    <div className="space-y-0.5">
+                      {(f.items || []).slice(0, 3).map((item, i) => (
+                        <p key={i} className="text-zinc-300 text-xs truncate">
+                          {item.esLiquidoDetallado
+                            ? `${item.productName} (${item.mlAmount}ml) — ${formatCurrency(item.montoRD)}`
+                            : `${item.quantity}× ${item.productName} — ${formatCurrency(item.subtotal)}`}
+                        </p>
+                      ))}
+                      {(f.items||[]).length > 3 && <p className="text-zinc-600 text-xs">+{f.items.length-3} más...</p>}
+                    </div>
+                  </div>
+
+                  {/* Total + acción */}
+                  <div className="flex items-center gap-3 sm:flex-col sm:items-end">
+                    <div className="text-right">
+                      <p className="text-amber-400 font-black text-xl">{formatCurrency(f.total)}</p>
+                      <p className="text-zinc-600 text-xs">
+                        {fecha.toLocaleDateString("es-DO", { day: "2-digit", month: "short" })} · {fecha.toLocaleTimeString("es-DO", { hour:"2-digit", minute:"2-digit" })}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleCobrar(f.id)}
+                      disabled={marking === f.id}
+                      className="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 hover:border-emerald-500/60 text-emerald-400 font-bold px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 disabled:opacity-50 shrink-0"
+                    >
+                      {marking === f.id ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Cobrado</>}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
