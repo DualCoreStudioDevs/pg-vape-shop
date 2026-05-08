@@ -495,21 +495,31 @@ function POSView({ products, sales, user }) {
     if (!product) return;
     const botellas = product.stock_botellas ?? product.stock ?? 0;
     if (botellas < 1) return;
-    // Usa precio_botella (precio de venta registrado en inventario).
-    // Fallback: precioPorMl * ml_por_botella si el campo aún no existe en el doc.
-    const precioVenta = parseFloat(product.precio_botella) > 0
-      ? parseFloat(product.precio_botella)
-      : (parseFloat(product.precioPorMl) || 0) * (parseFloat(product.ml_por_botella) || 0);
+
+    // Cadena de fallback: cubre todos los nombres de campo que pueden existir
+    // en documentos Firestore según cuándo fueron creados.
+    const precioVenta =
+      parseFloat(product.precio_venta_botella) ||   // nombre que el usuario reporta en la DB
+      parseFloat(product.precio_botella)        ||   // nombre usado por el código actual
+      parseFloat(product.precio_por_botella)    ||   // alias legacy
+      parseFloat(product.precioBotella)         ||   // camelCase legacy
+      0;
+
+    if (precioVenta <= 0) {
+      // Producto sin precio de venta registrado — avisar sin bloquear el flujo
+      console.warn(`[POS] producto "${product.nombre}" no tiene precio_venta_botella definido.`, product);
+    }
+
     const key = `botella-${product.id}-${Date.now()}`;
     setCart((prev) => [...prev, {
       key,
       id:               product.id,
       nombre:           product.nombre,
       marca:            product.marca,
-      precio:           precioVenta,       // ← precio real de venta
+      precio:           precioVenta,        // ← precio real desde Firestore
       qty:              1,
       esLiquidoBotella: true,
-      mlPorBotella:     product.ml_por_botella || 0,
+      mlPorBotella:     parseFloat(product.ml_por_botella) || 0,
     }]);
     setLiquidTipoModal(null);
   };
@@ -750,9 +760,11 @@ function POSView({ products, sales, user }) {
                 <span className="text-white font-bold text-sm">Botella completa</span>
                 <span className="text-zinc-500 text-xs text-center">
                   {formatCurrency(
-                    parseFloat(liquidTipoModal.precio_botella) > 0
-                      ? parseFloat(liquidTipoModal.precio_botella)
-                      : (parseFloat(liquidTipoModal.precioPorMl) || 0) * (parseFloat(liquidTipoModal.ml_por_botella) || 0)
+                    parseFloat(liquidTipoModal.precio_venta_botella) ||
+                    parseFloat(liquidTipoModal.precio_botella)        ||
+                    parseFloat(liquidTipoModal.precio_por_botella)    ||
+                    parseFloat(liquidTipoModal.precioBotella)         ||
+                    0
                   )} · {liquidTipoModal.ml_por_botella || "?"}ml
                 </span>
                 <span className="text-cyan-400 text-xs font-semibold">

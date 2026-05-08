@@ -83,7 +83,8 @@ function buildProductPayload(data) {
     modoLiquido:      isLiquido ? "detallado" : "botella",
     ...(isLiquido && {
       precioPorMl,
-      precio_botella:        precioBotella,        // precio de venta por botella cerrada (POS)
+      precio_venta_botella:  precioBotella,        // nombre canónico (reportado por usuario)
+      precio_botella:        precioBotella,         // alias usado por el código anterior
       precio_costo_botella:  precioCostoBotella,   // costo interno de compra
       ml_por_botella:        mlPorBotella,
       stock_botellas:        stockBotellas,
