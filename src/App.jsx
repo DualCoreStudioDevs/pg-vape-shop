@@ -444,9 +444,10 @@ function POSView({ products, sales, user }) {
   const [saleModal,       setSaleModal]       = useState(false);
   const [paymentMethod,   setPaymentMethod]   = useState("efectivo");
   const [amountPaid,      setAmountPaid]      = useState("");
-  const [liquidModal,     setLiquidModal]     = useState(null);
+  const [liquidModal,     setLiquidModal]     = useState(null);      // null | product (modo selector tipo)
+  const [liquidTipoModal, setLiquidTipoModal] = useState(null);      // null | product (selector botella vs ML)
   const [liquidMonto,     setLiquidMonto]     = useState("");
-  const [ticket,          setTicket]          = useState(null);   // datos del ticket a imprimir
+  const [ticket,          setTicket]          = useState(null);
   const [processing,      setProcessing]      = useState(false);
   const [saleError,       setSaleError]       = useState("");
   const [fiadoMode,       setFiadoMode]       = useState(false);
@@ -472,7 +473,8 @@ function POSView({ products, sales, user }) {
   // ── Carrito ──
   const addToCart = (product, nicotineLevel) => {
     if (product.categoria === "Líquidos" && product.modoLiquido === "detallado") {
-      setLiquidModal(product);
+      // Mostrar modal para elegir: Botella completa o ML detallado
+      setLiquidTipoModal(product);
       setLiquidMonto("");
       return;
     }
@@ -484,17 +486,38 @@ function POSView({ products, sales, user }) {
     });
   };
 
-  const addLiquidToCart = () => {
-    if (!liquidModal || !liquidMonto || parseFloat(liquidMonto) <= 0) return;
-    const monto      = parseFloat(liquidMonto);
-    const precioPorMl = liquidModal.precioPorMl || 1;
-    const mlAmount   = Math.round((monto / precioPorMl) * 100) / 100;
-    const key        = `liquid-${liquidModal.id}-${Date.now()}`;
+  // ── Agregar botella completa de líquido al carrito ──
+  const addLiquidBotellaToCart = (product) => {
+    if (!product) return;
+    const botellas = product.stock_botellas ?? product.stock ?? 0;
+    if (botellas < 1) return;
+    const key = `botella-${product.id}-${Date.now()}`;
     setCart((prev) => [...prev, {
-      key, id: liquidModal.id, nombre: liquidModal.nombre, marca: liquidModal.marca,
+      key,
+      id:               product.id,
+      nombre:           product.nombre,
+      marca:            product.marca,
+      precio:           product.precio,
+      qty:              1,
+      esLiquidoBotella: true,    // ← flag para services.js
+      mlPorBotella:     product.ml_por_botella || 0,
+    }]);
+    setLiquidTipoModal(null);
+  };
+
+  const addLiquidToCart = () => {
+    const product = liquidModal || liquidTipoModal;
+    if (!product || !liquidMonto || parseFloat(liquidMonto) <= 0) return;
+    const monto      = parseFloat(liquidMonto);
+    const precioPorMl = product.precioPorMl || 1;
+    const mlAmount   = Math.round((monto / precioPorMl) * 100) / 100;
+    const key        = `liquid-${product.id}-${Date.now()}`;
+    setCart((prev) => [...prev, {
+      key, id: product.id, nombre: product.nombre, marca: product.marca,
       esLiquidoDetallado: true, mlAmount, montoRD: monto, precioPorMl, precio: monto, qty: 1,
     }]);
     setLiquidModal(null);
+    setLiquidTipoModal(null);
     setLiquidMonto("");
   };
 
@@ -684,6 +707,61 @@ function POSView({ products, sales, user }) {
       {/* ── TICKET DE IMPRESIÓN ── */}
       {ticket && <PrintTicket sale={ticket} onClose={() => setTicket(null)} />}
 
+      {/* ── MODAL: Selector Botella vs ML para líquidos detallados ── */}
+      {liquidTipoModal && !liquidModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setLiquidTipoModal(null)}>
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+          <div className="relative bg-[#1a1a1a] border border-cyan-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => setLiquidTipoModal(null)} className="absolute top-4 right-4 text-zinc-500 hover:text-white"><X className="w-5 h-5" /></button>
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-12 h-12 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center">
+                <Package className="w-5 h-5 text-cyan-400" />
+              </div>
+              <div>
+                <p className="text-white font-bold">{liquidTipoModal.nombre}</p>
+                <p className="text-cyan-400 text-sm">
+                  {formatCurrency(liquidTipoModal.precioPorMl || 0)}/ml ·{" "}
+                  {liquidTipoModal.total_ml_disponibles ?? liquidTipoModal.stockMl ?? 0}ml disp. ·{" "}
+                  {liquidTipoModal.stock_botellas ?? 0} botellas
+                </p>
+              </div>
+            </div>
+            <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-3">¿Cómo deseas vender este líquido?</p>
+            <div className="grid grid-cols-2 gap-3">
+              {/* Opción: Botella completa */}
+              <button
+                onClick={() => addLiquidBotellaToCart(liquidTipoModal)}
+                disabled={(liquidTipoModal.stock_botellas ?? liquidTipoModal.stock ?? 0) < 1}
+                className="flex flex-col items-center gap-2 bg-zinc-900 hover:bg-cyan-500/10 border border-zinc-700 hover:border-cyan-500/50 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl p-4 transition-all group"
+              >
+                <span className="text-3xl">🍾</span>
+                <span className="text-white font-bold text-sm">Botella completa</span>
+                <span className="text-zinc-500 text-xs text-center">
+                  {formatCurrency(liquidTipoModal.precio)} · {liquidTipoModal.ml_por_botella || "?"}ml
+                </span>
+                <span className="text-cyan-400 text-xs font-semibold">
+                  {liquidTipoModal.stock_botellas ?? liquidTipoModal.stock ?? 0} disp.
+                </span>
+              </button>
+              {/* Opción: ML detallado */}
+              <button
+                onClick={() => { setLiquidModal(liquidTipoModal); }}
+                className="flex flex-col items-center gap-2 bg-zinc-900 hover:bg-cyan-500/10 border border-zinc-700 hover:border-cyan-500/50 rounded-xl p-4 transition-all group"
+              >
+                <span className="text-3xl">💧</span>
+                <span className="text-white font-bold text-sm">Por ML</span>
+                <span className="text-zinc-500 text-xs text-center">
+                  {formatCurrency(liquidTipoModal.precioPorMl || 0)}/ml
+                </span>
+                <span className="text-cyan-400 text-xs font-semibold">
+                  {liquidTipoModal.total_ml_disponibles ?? liquidTipoModal.stockMl ?? 0}ml disp.
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── MODAL: Vista detalle de producto ── */}
       {selectedProduct && (
         <ProductDetailModal
@@ -695,10 +773,10 @@ function POSView({ products, sales, user }) {
 
       {/* ── MODAL: Monto para líquido detallado ── */}
       {liquidModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setLiquidModal(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => { setLiquidModal(null); }}>
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
           <div className="relative bg-[#1a1a1a] border border-cyan-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setLiquidModal(null)} className="absolute top-4 right-4 text-zinc-500 hover:text-white">
+            <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); }} className="absolute top-4 right-4 text-zinc-500 hover:text-white">
               <X className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-3 mb-5">
@@ -711,7 +789,7 @@ function POSView({ products, sales, user }) {
               )}
               <div>
                 <p className="text-white font-bold">{liquidModal.nombre}</p>
-                <p className="text-cyan-400 text-sm">{formatCurrency(liquidModal.precioPorMl || 0)}/ml · {liquidModal.stockMl || 0}ml disp.</p>
+                <p className="text-cyan-400 text-sm">{formatCurrency(liquidModal.precioPorMl || 0)}/ml · {liquidModal.total_ml_disponibles ?? liquidModal.stockMl ?? 0}ml disp.</p>
               </div>
             </div>
             <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Monto en RD$ a cobrar</label>
@@ -729,7 +807,7 @@ function POSView({ products, sales, user }) {
               </div>
             )}
             <div className="flex gap-3">
-              <button onClick={() => setLiquidModal(null)} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
+              <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
               <button
                 onClick={addLiquidToCart}
                 disabled={!liquidMonto || parseFloat(liquidMonto) <= 0}
@@ -810,6 +888,7 @@ function ProductCard({ product, selectedNic, onSelectNic, onAdd, onPreview }) {
 // ─── Cart Item ─────────────────────────────────────────────
 function CartItem({ item, onUpdate, onRemove }) {
   const isLiquidoDetallado = item.esLiquidoDetallado;
+  const isLiquidoBotella   = item.esLiquidoBotella;
   return (
     <div className="bg-zinc-900/60 border border-zinc-800/40 rounded-xl p-3 flex items-center gap-3">
       <div className="flex-1 min-w-0">
@@ -821,6 +900,11 @@ function CartItem({ item, onUpdate, onRemove }) {
           <div className="mt-0.5">
             <p className="text-cyan-400 text-xs font-bold">{item.mlAmount} ml</p>
             <p className="text-zinc-500 text-xs">{formatCurrency(item.precioPorMl)}/ml</p>
+          </div>
+        ) : isLiquidoBotella ? (
+          <div className="mt-0.5">
+            <p className="text-cyan-400 text-xs font-bold">🍾 Botella ({item.mlPorBotella || "?"}ml)</p>
+            <p className="text-zinc-500 text-xs">{formatCurrency(item.precio)} / botella</p>
           </div>
         ) : (
           <p className="text-zinc-500 text-xs mt-0.5">{formatCurrency(item.precio)} / u</p>
@@ -1649,7 +1733,8 @@ function InventoryView({ products }) {
                       <td className="px-4 py-3 text-white font-semibold">
                         {isDetallado ? (
                           <span className="flex flex-col gap-0.5">
-                            <span className="text-cyan-400 font-bold text-sm">{p.stockMl || 0} ml</span>
+                            <span className="text-cyan-400 font-bold text-sm">{p.total_ml_disponibles ?? p.stockMl ?? 0} ml</span>
+                            <span className="text-[10px] text-zinc-500">🍾 {p.stock_botellas ?? 0} botellas</span>
                             <span className="text-[10px] text-zinc-600">{formatCurrency(p.precioPorMl || 0)}/ml</span>
                           </span>
                         ) : p.stock}
