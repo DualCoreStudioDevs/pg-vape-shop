@@ -42,47 +42,52 @@ export async function deleteProduct(productId) {
 /**
  * buildProductPayload — Esquema del objeto producto (Firestore)
  *
- * Para Líquidos en modo "detallado":
- *   - precio y stock (genérico) NO se usan para la venta, pero se guardan como 0
- *   - Se usan: ml_por_botella, cantidad_botellas, precio_por_botella (= precioPorMl)
- *   - Se calcula: total_ml_disponibles = ml_por_botella * cantidad_botellas
+ * Para Líquidos (SIEMPRE modo detallado):
+ *   - precio y stock genérico = 0 (no se usan en venta)
+ *   - Campos: ml_por_botella, cantidad_botellas, precio_costo_botella (costo interno)
+ *   - precioPorMl = precio de venta al cliente por ml (usado en POS modo ML)
+ *   - Se calcula: stock_total_ml = ml_por_botella * cantidad_botellas
  *   - stock_botellas = cantidad_botellas al crear; se sincroniza en cada venta
  *
- * Para modo "botella" o cualquier otra categoría:
+ * Para cualquier otra categoría:
  *   - Campos normales: precio, stock
  */
 function buildProductPayload(data) {
-  const isLiquidoDetallado = data.categoria === "Líquidos" && data.modoLiquido === "detallado";
+  const isLiquido = data.categoria === "Líquidos";
 
-  const mlPorBotella     = parseFloat(data.ml_por_botella) || 0;
-  const cantidadBotellas = parseInt(data.cantidad_botellas, 10) || 0;
-  const stockBotellas    = parseInt(data.stock_botellas ?? data.cantidad_botellas, 10) || 0;
+  const mlPorBotella         = parseFloat(data.ml_por_botella) || 0;
+  const cantidadBotellas     = parseInt(data.cantidad_botellas, 10) || 0;
+  const stockBotellas        = parseInt(data.stock_botellas ?? data.cantidad_botellas, 10) || 0;
+  const precioCostoBotella   = parseFloat(data.precio_costo_botella || data.precioCostoBotella) || 0;
+  // precioPorMl = precio de venta al cliente; si no viene, se calcula desde precio_costo_botella / ml
+  const precioPorMl          = parseFloat(data.precioPorMl || data.precio_por_botella) || 0;
 
-  // total_ml_disponibles se calcula desde botellas
-  let totalMlDisponibles = parseFloat(data.stockMl) || 0;
-  if (isLiquidoDetallado && mlPorBotella > 0 && stockBotellas > 0) {
-    totalMlDisponibles = mlPorBotella * stockBotellas;
-  }
+  // stock_total_ml siempre calculado desde botellas × ml
+  const totalMlDisponibles   = isLiquido && mlPorBotella > 0 && stockBotellas > 0
+    ? mlPorBotella * stockBotellas
+    : (parseFloat(data.stockMl) || 0);
 
   return {
     nombre:           String(data.nombre || "").trim(),
     marca:            String(data.marca  || "").trim(),
     categoria:        data.categoria || "Desechables",
-    // Para Líquidos detallados, precio y stock genérico no se usan en venta
-    precio:           isLiquidoDetallado ? 0 : (parseFloat(data.precio) || 0),
-    stock:            isLiquidoDetallado ? 0 : (parseInt(data.stock, 10) || 0),
+    precio:           isLiquido ? 0 : (parseFloat(data.precio) || 0),
+    stock:            isLiquido ? 0 : (parseInt(data.stock, 10) || 0),
     descripcion:      String(data.descripcion || "").trim(),
     niveles_nicotina: Array.isArray(data.niveles_nicotina) ? data.niveles_nicotina : [],
     imageBase64:      data.imageBase64 || "",
     imageUrl:         data.imageUrl    || "",
-    modoLiquido:      data.categoria === "Líquidos" ? (data.modoLiquido || "botella") : "botella",
-    ...(isLiquidoDetallado && {
-      precioPorMl:          parseFloat(data.precioPorMl || data.precio_por_botella) || 0,
-      ml_por_botella:       mlPorBotella,
-      stock_botellas:       stockBotellas,
-      total_ml_disponibles: totalMlDisponibles,
-      stockMl:              totalMlDisponibles,  // alias retrocompat.
-      cantidad_botellas:    cantidadBotellas,
+    // Todos los líquidos usan modoLiquido: "detallado" siempre
+    modoLiquido:      isLiquido ? "detallado" : "botella",
+    ...(isLiquido && {
+      precioPorMl,
+      precio_costo_botella:  precioCostoBotella,
+      ml_por_botella:        mlPorBotella,
+      stock_botellas:        stockBotellas,
+      stock_total_ml:        totalMlDisponibles,
+      total_ml_disponibles:  totalMlDisponibles,
+      stockMl:               totalMlDisponibles,  // alias retrocompat.
+      cantidad_botellas:     cantidadBotellas,
     }),
     updatedAt: Timestamp.now(),
   };
@@ -196,6 +201,7 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
 
         transaction.update(refs[pid], {
           total_ml_disponibles: mlNuevo,
+          stock_total_ml:       mlNuevo,
           stockMl:              mlNuevo,
           stock_botellas:       botellasSinc,
           updatedAt:            Timestamp.now(),
@@ -212,6 +218,7 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
         transaction.update(refs[pid], {
           stock_botellas:       botellasMenos,
           total_ml_disponibles: mlNuevo,
+          stock_total_ml:       mlNuevo,
           stockMl:              mlNuevo,
           stock:                botellasMenos,
           updatedAt:            Timestamp.now(),

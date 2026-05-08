@@ -444,9 +444,11 @@ function POSView({ products, sales, user }) {
   const [saleModal,       setSaleModal]       = useState(false);
   const [paymentMethod,   setPaymentMethod]   = useState("efectivo");
   const [amountPaid,      setAmountPaid]      = useState("");
-  const [liquidModal,     setLiquidModal]     = useState(null);      // null | product (modo selector tipo)
+  const [liquidModal,     setLiquidModal]     = useState(null);      // null | product (modal ML detallado)
   const [liquidTipoModal, setLiquidTipoModal] = useState(null);      // null | product (selector botella vs ML)
-  const [liquidMonto,     setLiquidMonto]     = useState("");
+  const [liquidMonto,     setLiquidMonto]     = useState("");        // legacy compat
+  const [liquidMlInput,   setLiquidMlInput]   = useState("");        // ML a vender (modal detallado)
+  const [liquidPrecioInput, setLiquidPrecioInput] = useState("");    // Precio personalizado (modal detallado)
   const [ticket,          setTicket]          = useState(null);
   const [processing,      setProcessing]      = useState(false);
   const [saleError,       setSaleError]       = useState("");
@@ -458,8 +460,8 @@ function POSView({ products, sales, user }) {
     const matchSearch = p.nombre?.toLowerCase().includes(search.toLowerCase()) ||
                         p.marca?.toLowerCase().includes(search.toLowerCase());
     const matchCat    = selectedCat === "Todos" || p.categoria === selectedCat;
-    const hasStock    = p.modoLiquido === "detallado"
-      ? (p.total_ml_disponibles ?? p.stockMl ?? 0) > 0
+    const hasStock    = p.categoria === "Líquidos"
+      ? (p.total_ml_disponibles ?? p.stock_total_ml ?? p.stockMl ?? 0) > 0
       : (p.stock || 0) > 0;
     return matchSearch && matchCat && hasStock;
   }), [products, search, selectedCat]);
@@ -474,8 +476,8 @@ function POSView({ products, sales, user }) {
 
   // ── Carrito ──
   const addToCart = (product, nicotineLevel) => {
-    if (product.categoria === "Líquidos" && product.modoLiquido === "detallado") {
-      // Mostrar modal para elegir: Botella completa o ML detallado
+    if (product.categoria === "Líquidos") {
+      // Todos los líquidos abren el modal de selección Botella vs ML
       setLiquidTipoModal(product);
       setLiquidMonto("");
       return;
@@ -493,15 +495,17 @@ function POSView({ products, sales, user }) {
     if (!product) return;
     const botellas = product.stock_botellas ?? product.stock ?? 0;
     if (botellas < 1) return;
+    // Precio de lista de botella = precioPorMl * ml_por_botella
+    const precioLista = (parseFloat(product.precioPorMl) || 0) * (parseFloat(product.ml_por_botella) || 0);
     const key = `botella-${product.id}-${Date.now()}`;
     setCart((prev) => [...prev, {
       key,
       id:               product.id,
       nombre:           product.nombre,
       marca:            product.marca,
-      precio:           product.precio,
+      precio:           precioLista,
       qty:              1,
-      esLiquidoBotella: true,    // ← flag para services.js
+      esLiquidoBotella: true,
       mlPorBotella:     product.ml_por_botella || 0,
     }]);
     setLiquidTipoModal(null);
@@ -509,17 +513,20 @@ function POSView({ products, sales, user }) {
 
   const addLiquidToCart = () => {
     const product = liquidModal || liquidTipoModal;
-    if (!product || !liquidMonto || parseFloat(liquidMonto) <= 0) return;
-    const monto      = parseFloat(liquidMonto);
-    const precioPorMl = product.precioPorMl || 1;
-    const mlAmount   = Math.round((monto / precioPorMl) * 100) / 100;
-    const key        = `liquid-${product.id}-${Date.now()}`;
+    if (!product) return;
+    const mlAmount = parseFloat(liquidMlInput);
+    const monto    = parseFloat(liquidPrecioInput);
+    if (!mlAmount || mlAmount <= 0 || !monto || monto <= 0) return;
+    const precioPorMl = monto / mlAmount;
+    const key = `liquid-${product.id}-${Date.now()}`;
     setCart((prev) => [...prev, {
       key, id: product.id, nombre: product.nombre, marca: product.marca,
       esLiquidoDetallado: true, mlAmount, montoRD: monto, precioPorMl, precio: monto, qty: 1,
     }]);
     setLiquidModal(null);
     setLiquidTipoModal(null);
+    setLiquidMlInput("");
+    setLiquidPrecioInput("");
     setLiquidMonto("");
   };
 
@@ -739,7 +746,7 @@ function POSView({ products, sales, user }) {
                 <span className="text-3xl">🍾</span>
                 <span className="text-white font-bold text-sm">Botella completa</span>
                 <span className="text-zinc-500 text-xs text-center">
-                  {formatCurrency(liquidTipoModal.precio)} · {liquidTipoModal.ml_por_botella || "?"}ml
+                  {formatCurrency((parseFloat(liquidTipoModal.precioPorMl) || 0) * (parseFloat(liquidTipoModal.ml_por_botella) || 0))} · {liquidTipoModal.ml_por_botella || "?"}ml
                 </span>
                 <span className="text-cyan-400 text-xs font-semibold">
                   {liquidTipoModal.stock_botellas ?? liquidTipoModal.stock ?? 0} disp.
@@ -747,7 +754,7 @@ function POSView({ products, sales, user }) {
               </button>
               {/* Opción: ML detallado */}
               <button
-                onClick={() => { setLiquidModal(liquidTipoModal); }}
+                onClick={() => { setLiquidModal(liquidTipoModal); setLiquidMlInput(""); setLiquidPrecioInput(""); }}
                 className="flex flex-col items-center gap-2 bg-zinc-900 hover:bg-cyan-500/10 border border-zinc-700 hover:border-cyan-500/50 rounded-xl p-4 transition-all group"
               >
                 <span className="text-3xl">💧</span>
@@ -775,10 +782,10 @@ function POSView({ products, sales, user }) {
 
       {/* ── MODAL: Monto para líquido detallado ── */}
       {liquidModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => { setLiquidModal(null); }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => { setLiquidModal(null); setLiquidMlInput(""); setLiquidPrecioInput(""); }}>
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
           <div className="relative bg-[#1a1a1a] border border-cyan-500/30 rounded-2xl p-6 w-full max-w-sm shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); }} className="absolute top-4 right-4 text-zinc-500 hover:text-white">
+            <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); setLiquidMlInput(""); setLiquidPrecioInput(""); }} className="absolute top-4 right-4 text-zinc-500 hover:text-white">
               <X className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-3 mb-5">
@@ -791,28 +798,36 @@ function POSView({ products, sales, user }) {
               )}
               <div>
                 <p className="text-white font-bold">{liquidModal.nombre}</p>
-                <p className="text-cyan-400 text-sm">{formatCurrency(liquidModal.precioPorMl || 0)}/ml · {liquidModal.total_ml_disponibles ?? liquidModal.stockMl ?? 0}ml disp.</p>
+                <p className="text-cyan-400 text-sm">{liquidModal.total_ml_disponibles ?? liquidModal.stockMl ?? 0}ml disp. · 🍾{liquidModal.stock_botellas ?? 0} bot.</p>
               </div>
             </div>
-            <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Monto en RD$ a cobrar</label>
+            {/* Input: ML a vender */}
+            <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">ML a vender</label>
             <input
-              type="number" value={liquidMonto} onChange={(e) => setLiquidMonto(e.target.value)}
-              placeholder="Ej: 50, 100, 200..." min="0" autoFocus
+              type="number" value={liquidMlInput} onChange={(e) => setLiquidMlInput(e.target.value)}
+              placeholder="Ej: 10, 30, 60..." min="0" autoFocus
+              className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-cyan-500 transition-all mb-4"
+            />
+            {/* Input: Precio personalizado */}
+            <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio personalizado (RD$)</label>
+            <input
+              type="number" value={liquidPrecioInput} onChange={(e) => setLiquidPrecioInput(e.target.value)}
+              placeholder="Ej: 50, 100, 200..." min="0"
               className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-4 py-3 text-lg focus:outline-none focus:border-cyan-500 transition-all mb-3"
             />
-            {liquidMonto && parseFloat(liquidMonto) > 0 && (
+            {liquidMlInput && liquidPrecioInput && parseFloat(liquidMlInput) > 0 && parseFloat(liquidPrecioInput) > 0 && (
               <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl px-4 py-2.5 mb-4 flex justify-between items-center">
-                <span className="text-zinc-400 text-sm">ML a dispensar:</span>
+                <span className="text-zinc-400 text-sm">Precio/ml implícito:</span>
                 <span className="text-cyan-400 font-black text-lg">
-                  {Math.round((parseFloat(liquidMonto) / (liquidModal.precioPorMl || 1)) * 100) / 100} ml
+                  {formatCurrency(parseFloat(liquidPrecioInput) / parseFloat(liquidMlInput))}/ml
                 </span>
               </div>
             )}
             <div className="flex gap-3">
-              <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
+              <button onClick={() => { setLiquidModal(null); setLiquidTipoModal(null); setLiquidMlInput(""); setLiquidPrecioInput(""); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
               <button
                 onClick={addLiquidToCart}
-                disabled={!liquidMonto || parseFloat(liquidMonto) <= 0}
+                disabled={!liquidMlInput || parseFloat(liquidMlInput) <= 0 || !liquidPrecioInput || parseFloat(liquidPrecioInput) <= 0}
                 className="flex-1 bg-gradient-to-r from-cyan-500 to-cyan-600 hover:from-cyan-400 hover:to-cyan-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2"
               >
                 <Plus className="w-4 h-4" /> Agregar al Carrito
@@ -829,7 +844,7 @@ function POSView({ products, sales, user }) {
 function ProductCard({ product, selectedNic, onSelectNic, onAdd, onPreview }) {
   const nicLevels         = product.niveles_nicotina || [];
   const isLowStock        = product.stock <= 5;
-  const isLiquidoDetallado = product.categoria === "Líquidos" && product.modoLiquido === "detallado";
+  const isLiquidoDetallado = product.categoria === "Líquidos";
   const src               = imgSrc(product);
 
   return (
@@ -1546,8 +1561,9 @@ const EMPTY_PRODUCT = {
   nombre: "", marca: "", categoria: "Desechables",
   precio: "", stock: "", descripcion: "", niveles_nicotina: [],
   imageBase64: "", imageUrl: "",
-  modoLiquido: "botella", precioPorMl: "", stockMl: "",
+  precioPorMl: "", stockMl: "",
   ml_por_botella: "", cantidad_botellas: "", stock_botellas: "",
+  precio_costo_botella: "",
 };
 
 function InventoryView({ products }) {
@@ -1591,12 +1607,12 @@ function InventoryView({ products }) {
       niveles_nicotina: p.niveles_nicotina || [],
       imageBase64:      p.imageBase64 || "",
       imageUrl:         p.imageUrl    || "",
-      modoLiquido:      p.modoLiquido || "botella",
       precioPorMl:      String(p.precioPorMl || ""),
       stockMl:          String(p.stockMl     || ""),
       ml_por_botella:   String(p.ml_por_botella || ""),
       cantidad_botellas: String(p.cantidad_botellas || ""),
       stock_botellas:   String(p.stock_botellas ?? p.cantidad_botellas ?? ""),
+      precio_costo_botella: String(p.precio_costo_botella || ""),
     });
     setImgPreview(p.imageBase64 || p.imageUrl || "");
     setImgError("");
@@ -1627,7 +1643,9 @@ function InventoryView({ products }) {
 
   // ── Guardar producto (nuevo o edición) — retorna success ──
   const handleSave = async () => {
-    if (!form.nombre || !form.precio) return;
+    const isLiquido = form.categoria === "Líquidos";
+    if (!form.nombre) return;
+    if (!isLiquido && !form.precio) return;
     setSaving(true);
     setSaveError("");
     try {
@@ -1711,7 +1729,7 @@ function InventoryView({ products }) {
               ) : (
                 filtered.map((p) => {
                   const src          = imgSrc(p);
-                  const isDetallado  = p.modoLiquido === "detallado";
+                  const isDetallado  = p.categoria === "Líquidos";
                   const stockDisplay = isDetallado
                     ? (p.total_ml_disponibles ?? p.stockMl ?? 0)
                     : p.stock;
@@ -1867,101 +1885,72 @@ function InventoryView({ products }) {
                 </div>
               </div>
 
-              {/* ── Modo Líquido (selector primero para condicionar los campos de abajo) ── */}
+              {/* ── Campos Líquidos (siempre detallado) ── */}
               {form.categoria === "Líquidos" && (
                 <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4 space-y-3">
-                  <label className="text-cyan-400 text-xs font-semibold uppercase tracking-wider block">Modo de venta del líquido</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { id: "botella",   label: "🍾 Botella Cerrada", desc: "Se vende por unidad"      },
-                      { id: "detallado", label: "💧 Detallado (ML)",   desc: "Se vende por mililitros" },
-                    ].map(({ id, label, desc }) => (
-                      <button
-                        key={id} type="button" onClick={() => setForm((f) => ({ ...f, modoLiquido: id }))}
-                        className={`text-left px-3 py-2.5 rounded-xl border transition-all text-sm ${
-                          form.modoLiquido === id
-                            ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300"
-                            : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:border-zinc-500"
-                        }`}
-                      >
-                        <div className="font-semibold text-xs">{label}</div>
-                        <div className="text-[10px] opacity-70 mt-0.5">{desc}</div>
-                      </button>
-                    ))}
+                  <p className="text-cyan-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                    💧 Configuración del Líquido
+                  </p>
+
+                  {/* ML por botella */}
+                  <div>
+                    <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
+                      ML por botella <span className="text-cyan-500">*</span>
+                    </label>
+                    <input type="number" value={form.ml_por_botella}
+                      onChange={(e) => {
+                        const ml = e.target.value;
+                        const bots = parseFloat(form.stock_botellas || form.cantidad_botellas) || 0;
+                        const total = (parseFloat(ml) || 0) * bots;
+                        setForm((f) => ({ ...f, ml_por_botella: ml, stockMl: total > 0 ? String(total) : f.stockMl }));
+                      }}
+                      placeholder="Ej: 30" min="0"
+                      className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
                   </div>
 
-                  {/* Campos exclusivos modo Detallado */}
-                  {form.modoLiquido === "detallado" && (
-                    <div className="space-y-3 mt-2">
-                      {/* Precio por ML */}
-                      <div>
-                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
-                          Precio por ML (RD$) <span className="text-cyan-500">*</span>
-                        </label>
-                        <input type="number" value={form.precioPorMl}
-                          onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))}
-                          placeholder="0.00" min="0" step="0.01"
-                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                      </div>
-                      {/* Stock de botellas */}
-                      <div className="bg-zinc-900/80 border border-cyan-500/10 rounded-xl p-3 space-y-2">
-                        <p className="text-cyan-400 text-[11px] font-semibold uppercase tracking-wider">📦 Stock de botellas</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-zinc-400 text-xs block mb-1">ML por botella</label>
-                            <input type="number" value={form.ml_por_botella}
-                              onChange={(e) => {
-                                const ml = e.target.value;
-                                const bots = parseFloat(form.stock_botellas || form.cantidad_botellas) || 0;
-                                const total = (parseFloat(ml) || 0) * bots;
-                                setForm((f) => ({ ...f, ml_por_botella: ml, stockMl: total > 0 ? String(total) : f.stockMl }));
-                              }}
-                              placeholder="Ej: 30" min="0"
-                              className="w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                          </div>
-                          <div>
-                            <label className="text-zinc-400 text-xs block mb-1">Cantidad de botellas</label>
-                            <input type="number" value={form.stock_botellas || form.cantidad_botellas}
-                              onChange={(e) => {
-                                const bots = e.target.value;
-                                const ml = parseFloat(form.ml_por_botella) || 0;
-                                const total = ml * (parseFloat(bots) || 0);
-                                setForm((f) => ({ ...f, stock_botellas: bots, cantidad_botellas: bots, stockMl: total > 0 ? String(total) : f.stockMl }));
-                              }}
-                              placeholder="Ej: 10" min="0"
-                              className="w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                          </div>
-                        </div>
-                        {/* Auto-cálculo total_ml_disponibles */}
-                        {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.stock_botellas || form.cantidad_botellas) > 0 && (
-                          <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2">
-                            <span className="text-cyan-400 text-xs">= total_ml_disponibles:</span>
-                            <span className="text-cyan-300 font-black text-sm">
-                              {(parseFloat(form.ml_por_botella) * parseFloat(form.stock_botellas || form.cantidad_botellas)).toFixed(0)} ML
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      {/* Stock ML (override manual si no usa el auto-calc) */}
-                      <div>
-                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
-                          Stock total (ML){" "}
-                          {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.stock_botellas || form.cantidad_botellas) > 0
-                            ? <span className="text-cyan-500/70 normal-case">— auto-calculado</span>
-                            : ""}
-                        </label>
-                        <input type="number" value={form.stockMl}
-                          onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))}
-                          placeholder="0" min="0"
-                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                      </div>
+                  {/* Cantidad de botellas */}
+                  <div>
+                    <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
+                      Cantidad de botellas <span className="text-cyan-500">*</span>
+                    </label>
+                    <input type="number" value={form.stock_botellas || form.cantidad_botellas}
+                      onChange={(e) => {
+                        const bots = e.target.value;
+                        const ml = parseFloat(form.ml_por_botella) || 0;
+                        const total = ml * (parseFloat(bots) || 0);
+                        setForm((f) => ({ ...f, stock_botellas: bots, cantidad_botellas: bots, stockMl: total > 0 ? String(total) : f.stockMl }));
+                      }}
+                      placeholder="Ej: 10" min="0"
+                      className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                  </div>
+
+                  {/* Auto-cálculo stock_total_ml */}
+                  {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.stock_botellas || form.cantidad_botellas) > 0 && (
+                    <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2">
+                      <span className="text-cyan-400 text-xs">= stock_total_ml:</span>
+                      <span className="text-cyan-300 font-black text-sm">
+                        {(parseFloat(form.ml_por_botella) * parseFloat(form.stock_botellas || form.cantidad_botellas)).toFixed(0)} ML
+                      </span>
                     </div>
                   )}
+
+                  {/* Precio costo por botella */}
+                  <div>
+                    <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
+                      Precio costo / botella (RD$) <span className="text-cyan-500">*</span>
+                    </label>
+                    <input type="number" value={form.precio_costo_botella}
+                      onChange={(e) => setForm((f) => ({ ...f, precio_costo_botella: e.target.value }))}
+                      placeholder="Ej: 150.00" min="0" step="0.01"
+                      className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                    <p className="text-zinc-600 text-[10px] mt-1">Costo interno de compra. El precio de venta se define en el POS al momento de la venta.</p>
+                  </div>
                 </div>
               )}
 
-              {/* Precio + Stock — OCULTO para Líquidos Detallados (usan precio por ML y botellas) */}
-              {!(form.categoria === "Líquidos" && form.modoLiquido === "detallado") && (
+
+              {/* Precio + Stock — OCULTO para Líquidos (usan campos propios de líquido) */}
+              {form.categoria !== "Líquidos" && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio (RD$) <span className="text-orange-500">*</span></label>
@@ -2039,7 +2028,7 @@ function InventoryView({ products }) {
               <button onClick={closeForm} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">Cancelar</button>
               <button
                 onClick={handleSave}
-                disabled={saving || !form.nombre || (!(form.categoria === "Líquidos" && form.modoLiquido === "detallado") && !form.precio)}
+                disabled={saving || !form.nombre || (form.categoria !== "Líquidos" && !form.precio)}
                 className="flex-1 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
               >
                 {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" />{formProduct ? "Guardar Cambios" : "Crear Producto"}</>}
