@@ -1,5 +1,5 @@
 // src/firebase/services.js — PG VAPE SHOP
-// ✅ Inventario ML con stock_botellas | ✅ Fiado | ✅ Dashboard KPIs reales
+// ✅ Inventario ML con stock_botellas | ✅ Fiado estadoCobro:"pendiente" | ✅ Dashboard KPIs reales
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc,
   Timestamp, query, where, orderBy, runTransaction,
@@ -42,17 +42,14 @@ export async function deleteProduct(productId) {
 /**
  * buildProductPayload — Esquema del objeto producto (Firestore)
  *
- * Campos comunes:
- *   nombre, marca, categoria, precio, stock, descripcion,
- *   niveles_nicotina[], imageBase64, imageUrl, modoLiquido,
- *   createdAt, updatedAt
+ * Para Líquidos en modo "detallado":
+ *   - precio y stock (genérico) NO se usan para la venta, pero se guardan como 0
+ *   - Se usan: ml_por_botella, cantidad_botellas, precio_por_botella (= precioPorMl)
+ *   - Se calcula: total_ml_disponibles = ml_por_botella * cantidad_botellas
+ *   - stock_botellas = cantidad_botellas al crear; se sincroniza en cada venta
  *
- * Campos adicionales SOLO para Líquidos modo "detallado":
- *   precioPorMl           — precio por mililitro (RD$)
- *   ml_por_botella        — ML que contiene cada botella física (int)
- *   stock_botellas        — botellas COMPLETAS en existencia (int)
- *   total_ml_disponibles  — ml_por_botella × stock_botellas (se recalcula en ventas)
- *   stockMl               — alias de total_ml_disponibles (retrocompatibilidad UI)
+ * Para modo "botella" o cualquier otra categoría:
+ *   - Campos normales: precio, stock
  */
 function buildProductPayload(data) {
   const isLiquidoDetallado = data.categoria === "Líquidos" && data.modoLiquido === "detallado";
@@ -61,7 +58,7 @@ function buildProductPayload(data) {
   const cantidadBotellas = parseInt(data.cantidad_botellas, 10) || 0;
   const stockBotellas    = parseInt(data.stock_botellas ?? data.cantidad_botellas, 10) || 0;
 
-  // total_ml_disponibles se calcula desde botellas cuando ambos campos están presentes
+  // total_ml_disponibles se calcula desde botellas
   let totalMlDisponibles = parseFloat(data.stockMl) || 0;
   if (isLiquidoDetallado && mlPorBotella > 0 && stockBotellas > 0) {
     totalMlDisponibles = mlPorBotella * stockBotellas;
@@ -71,15 +68,16 @@ function buildProductPayload(data) {
     nombre:           String(data.nombre || "").trim(),
     marca:            String(data.marca  || "").trim(),
     categoria:        data.categoria || "Desechables",
-    precio:           parseFloat(data.precio)  || 0,
-    stock:            parseInt(data.stock, 10)  || 0,
+    // Para Líquidos detallados, precio y stock genérico no se usan en venta
+    precio:           isLiquidoDetallado ? 0 : (parseFloat(data.precio) || 0),
+    stock:            isLiquidoDetallado ? 0 : (parseInt(data.stock, 10) || 0),
     descripcion:      String(data.descripcion || "").trim(),
     niveles_nicotina: Array.isArray(data.niveles_nicotina) ? data.niveles_nicotina : [],
     imageBase64:      data.imageBase64 || "",
     imageUrl:         data.imageUrl    || "",
     modoLiquido:      data.categoria === "Líquidos" ? (data.modoLiquido || "botella") : "botella",
     ...(isLiquidoDetallado && {
-      precioPorMl:          parseFloat(data.precioPorMl)  || 0,
+      precioPorMl:          parseFloat(data.precioPorMl || data.precio_por_botella) || 0,
       ml_por_botella:       mlPorBotella,
       stock_botellas:       stockBotellas,
       total_ml_disponibles: totalMlDisponibles,
@@ -103,12 +101,12 @@ function buildProductPayload(data) {
  *  B) Venta de ML DETALLADO (esLiquidoDetallado: true):
  *     total_ml_disponibles -= mlAmount
  *     stockMl              = total_ml_disponibles (sync)
- *     stock_botellas       = Math.floor(total_ml_disponibles / ml_por_botella)
+ *     stock_botellas       = Math.floor(total_ml_disponibles / ml_por_botella)  ← AUTO-SYNC
  *
  * LÓGICA DE FIADO:
- *  - metodo === "fiado"  → estadoCobro: "pendiente"  (NO suma en KPIs)
+ *  - metodo === "fiado"  → estadoCobro: "pendiente"  (NO suma en KPIs de ingreso real)
  *  - cualquier otro      → estadoCobro: "cobrado"    (SÍ suma en KPIs)
- *  - marcarFiadoCobrado() cambia "pendiente" → "cobrado"
+ *  - marcarFiadoCobrado() cambia "pendiente" → "cobrado" cuando se recibe el pago
  */
 export async function completeSale(cartItems, total, paymentMethod, cajero = null, fiadoInfo = null) {
   const esVentaFiada = paymentMethod === "fiado";
@@ -136,6 +134,7 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
     fechaISO:        new Date().toISOString(),
     cajero,
     esVentaFiada,
+    // ✅ FIX: Fiado siempre guarda estadoCobro:"pendiente"
     estadoCobro:     esVentaFiada ? "pendiente" : "cobrado",
     clienteNombre:   esVentaFiada ? (fiadoInfo?.nombre   || "") : null,
     clienteTelefono: esVentaFiada ? (fiadoInfo?.telefono || "") : null,
@@ -186,10 +185,11 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
       const producto = datos[pid];
 
       if (item.esLiquidoDetallado) {
-        // B) ML detallado
+        // B) ML detallado — ✅ AUTO-SYNC stock_botellas
         const mlActual  = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
         const mlNuevo   = Math.max(0, mlActual - item.mlAmount);
         const mlPorBot  = producto.ml_por_botella || 0;
+        // ✅ FIX: Auto-sincronización de botellas usando Math.floor
         const botellasSinc = mlPorBot > 0
           ? Math.floor(mlNuevo / mlPorBot)
           : (producto.stock_botellas ?? 0);
@@ -236,7 +236,10 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
 }
 
 // ── 4. FIADO — Cuentas por Cobrar ────────────────────────────
-/** Filtra ventas con estadoCobro === "pendiente" */
+/**
+ * ✅ FIX: Filtra correctamente con where("estadoCobro", "==", "pendiente")
+ * Requiere índice compuesto en Firestore: estadoCobro ASC + fecha DESC
+ */
 export async function getVentasFiadoPendientes() {
   const q = query(
     collection(db, "ventas"),
@@ -283,8 +286,10 @@ export async function getSalesByDate(date) { return queryVentas(startOfDay(date)
 
 /**
  * sumSales — KPI central del Dashboard
+ * ✅ FIX Dashboard: Total Ventas suma TODO; Ingreso Real excluye "pendiente"
+ *
  * Con { soloReales: true }: EXCLUYE ventas donde estadoCobro === "pendiente"
- * Solo suma ventas "cobradas" → fiado cobra SOLO cuando marcarFiadoCobrado()
+ * Con { soloReales: false } (default): suma absolutamente todo (incluye fiados)
  */
 export function sumSales(sales = [], { soloReales = false } = {}) {
   return sales.reduce((acc, v) => {
@@ -296,6 +301,11 @@ export function sumSales(sales = [], { soloReales = false } = {}) {
 /** sumRealIncome — siempre excluye pendientes (ingresos efectivamente cobrados) */
 export function sumRealIncome(sales = []) {
   return sumSales(sales, { soloReales: true });
+}
+
+/** sumTotalVentas — suma TODO incluyendo fiados pendientes (para el KPI "Total Ventas") */
+export function sumTotalVentas(sales = []) {
+  return sumSales(sales, { soloReales: false });
 }
 
 /** groupSalesByDay — para la gráfica de barras: solo ingresos reales */
@@ -355,8 +365,8 @@ export async function getDailySummary() {
     totalTarjeta:       m.tarjeta,
     totalTransferencia: m.transferencia,
     totalFiado:         m.fiado,
-    grandTotal:         m.total,
-    grandTotalReal:     sumRealIncome(sales),
+    grandTotal:         m.total,           // TODO: suma incluyendo fiados (para "Total Ventas")
+    grandTotalReal:     sumRealIncome(sales), // Solo cobrado (para "Ingreso Real")
     count:              sales.length,
   };
 }
