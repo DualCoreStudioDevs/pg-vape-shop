@@ -887,7 +887,14 @@ function ProductCard({ product, selectedNic, onSelectNic, onAdd, onPreview }) {
           <p className="text-sm font-bold text-white truncate leading-tight">{product.nombre}</p>
           {isLiquidoDetallado ? (
             <div className="mt-0.5">
-              <p className="text-cyan-400 font-black text-base">{formatCurrency(product.precioPorMl || 0)}<span className="text-xs font-normal text-zinc-500">/ml</span></p>
+              <p className="text-cyan-400 font-black text-base">
+                {formatCurrency(
+                  parseFloat(product.precio_venta_botella) ||
+                  parseFloat(product.precio_botella)        ||
+                  0
+                )}
+                <span className="text-xs font-normal text-zinc-500"> / botella</span>
+              </p>
               <p className="text-[10px] text-zinc-600">{product.total_ml_disponibles ?? product.stockMl ?? 0}ml · 🍾{product.stock_botellas ?? 0} bot.</p>
             </div>
           ) : (
@@ -1104,7 +1111,13 @@ function ProductDetailModal({ product, onClose, onAdd }) {
         </div>
         <p className="text-zinc-500 text-xs font-semibold mb-0.5">{product.marca}</p>
         <h3 className="text-white font-black text-xl mb-1">{product.nombre}</h3>
-        <p className="text-orange-400 font-black text-2xl mb-3">{formatCurrency(product.precio)}</p>
+        <p className="text-orange-400 font-black text-2xl mb-3">
+          {formatCurrency(
+            product.categoria === "Líquidos"
+              ? (parseFloat(product.precio_venta_botella) || parseFloat(product.precio_botella) || 0)
+              : product.precio
+          )}
+        </p>
         {product.descripcion && <p className="text-zinc-400 text-sm mb-4">{product.descripcion}</p>}
         <div className="flex justify-between text-sm mb-4">
           <span className="text-zinc-500">Categoría: <span className="text-zinc-300">{product.categoria}</span></span>
@@ -1773,7 +1786,15 @@ function InventoryView({ products }) {
                       <td className="px-4 py-3">
                         <span className="bg-zinc-800 text-zinc-300 text-xs px-2 py-0.5 rounded-full">{p.categoria}</span>
                       </td>
-                      <td className="px-4 py-3 text-orange-400 font-bold">{formatCurrency(p.precio)}</td>
+                      <td className="px-4 py-3 text-orange-400 font-bold">
+                        {isDetallado
+                          ? formatCurrency(
+                              parseFloat(p.precio_venta_botella) ||
+                              parseFloat(p.precio_botella)        ||
+                              0
+                            )
+                          : formatCurrency(p.precio)}
+                      </td>
                       <td className="px-4 py-3 text-white font-semibold">
                         {isDetallado ? (
                           <span className="flex flex-col gap-0.5">
