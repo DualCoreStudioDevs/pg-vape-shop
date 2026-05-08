@@ -458,7 +458,9 @@ function POSView({ products, sales, user }) {
     const matchSearch = p.nombre?.toLowerCase().includes(search.toLowerCase()) ||
                         p.marca?.toLowerCase().includes(search.toLowerCase());
     const matchCat    = selectedCat === "Todos" || p.categoria === selectedCat;
-    const hasStock    = p.modoLiquido === "detallado" ? (p.stockMl || 0) > 0 : (p.stock || 0) > 0;
+    const hasStock    = p.modoLiquido === "detallado"
+      ? (p.total_ml_disponibles ?? p.stockMl ?? 0) > 0
+      : (p.stock || 0) > 0;
     return matchSearch && matchCat && hasStock;
   }), [products, search, selectedCat]);
 
@@ -852,7 +854,7 @@ function ProductCard({ product, selectedNic, onSelectNic, onAdd, onPreview }) {
           {isLiquidoDetallado ? (
             <div className="mt-0.5">
               <p className="text-cyan-400 font-black text-base">{formatCurrency(product.precioPorMl || 0)}<span className="text-xs font-normal text-zinc-500">/ml</span></p>
-              <p className="text-[10px] text-zinc-600">Stock: {product.stockMl || 0}ml</p>
+              <p className="text-[10px] text-zinc-600">{product.total_ml_disponibles ?? product.stockMl ?? 0}ml · 🍾{product.stock_botellas ?? 0} bot.</p>
             </div>
           ) : (
             <>
@@ -1545,7 +1547,7 @@ const EMPTY_PRODUCT = {
   precio: "", stock: "", descripcion: "", niveles_nicotina: [],
   imageBase64: "", imageUrl: "",
   modoLiquido: "botella", precioPorMl: "", stockMl: "",
-  ml_por_botella: "", cantidad_botellas: "",
+  ml_por_botella: "", cantidad_botellas: "", stock_botellas: "",
 };
 
 function InventoryView({ products }) {
@@ -1594,6 +1596,7 @@ function InventoryView({ products }) {
       stockMl:          String(p.stockMl     || ""),
       ml_por_botella:   String(p.ml_por_botella || ""),
       cantidad_botellas: String(p.cantidad_botellas || ""),
+      stock_botellas:   String(p.stock_botellas ?? p.cantidad_botellas ?? ""),
     });
     setImgPreview(p.imageBase64 || p.imageUrl || "");
     setImgError("");
@@ -1709,7 +1712,9 @@ function InventoryView({ products }) {
                 filtered.map((p) => {
                   const src          = imgSrc(p);
                   const isDetallado  = p.modoLiquido === "detallado";
-                  const stockDisplay = isDetallado ? (p.stockMl || 0) : p.stock;
+                  const stockDisplay = isDetallado
+                    ? (p.total_ml_disponibles ?? p.stockMl ?? 0)
+                    : p.stock;
                   const stockOk      = stockDisplay > 5;
                   const stockLow     = stockDisplay > 0 && stockDisplay <= 5;
 
@@ -1898,7 +1903,60 @@ function InventoryView({ products }) {
                       </button>
                     ))}
                   </div>
-                  {form.modoLiquido === "detallado" && (\n                    <div className=\"space-y-3 mt-2\">\n                      {/* Precio por ML */}\n                      <div>\n                        <label className=\"text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5\">Precio por ML (RD$)</label>\n                        <input type=\"number\" value={form.precioPorMl} onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))} placeholder=\"0.00\" min=\"0\" step=\"0.01\"\n                          className=\"w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                      </div>\n                      {/* Calcular stock desde botellas */}\n                      <div className=\"bg-zinc-900/80 border border-cyan-500/10 rounded-xl p-3 space-y-2\">\n                        <p className=\"text-cyan-400 text-[11px] font-semibold uppercase tracking-wider\">📦 Calcular stock desde botellas</p>\n                        <div className=\"grid grid-cols-2 gap-2\">\n                          <div>\n                            <label className=\"text-zinc-400 text-xs block mb-1\">ML por botella</label>\n                            <input type=\"number\" value={form.ml_por_botella}\n                              onChange={(e) => {\n                                const ml = e.target.value;\n                                const bots = parseFloat(form.cantidad_botellas) || 0;\n                                const total = (parseFloat(ml) || 0) * bots;\n                                setForm((f) => ({ ...f, ml_por_botella: ml, stockMl: total > 0 ? String(total) : f.stockMl }));\n                              }}\n                              placeholder=\"Ej: 30\" min=\"0\"\n                              className=\"w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                          </div>\n                          <div>\n                            <label className=\"text-zinc-400 text-xs block mb-1\">Cantidad de botellas</label>\n                            <input type=\"number\" value={form.cantidad_botellas}\n                              onChange={(e) => {\n                                const bots = e.target.value;\n                                const ml = parseFloat(form.ml_por_botella) || 0;\n                                const total = ml * (parseFloat(bots) || 0);\n                                setForm((f) => ({ ...f, cantidad_botellas: bots, stockMl: total > 0 ? String(total) : f.stockMl }));\n                              }}\n                              placeholder=\"Ej: 10\" min=\"0\"\n                              className=\"w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                          </div>\n                        </div>\n                        {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.cantidad_botellas) > 0 && (\n                          <div className=\"flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2\">\n                            <span className=\"text-cyan-400 text-xs\">= Stock total:</span>\n                            <span className=\"text-cyan-300 font-black text-sm\">{(parseFloat(form.ml_por_botella) * parseFloat(form.cantidad_botellas)).toFixed(0)} ML</span>\n                          </div>\n                        )}\n                      </div>\n                      {/* Stock ML manual (o calculado) */}\n                      <div>\n                        <label className=\"text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5\">\n                          Stock total (ML) {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.cantidad_botellas) > 0 ? <span className=\"text-cyan-500/70 normal-case\">— auto-calculado</span> : \"\"}\n                        </label>\n                        <input type=\"number\" value={form.stockMl} onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))} placeholder=\"0\" min=\"0\"\n                          className=\"w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                      </div>\n                    </div>\n                  )}
+                  {form.modoLiquido === "detallado" && (
+                    <div className="space-y-3 mt-2">
+                      {/* Precio por ML */}
+                      <div>
+                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio por ML (RD$)</label>
+                        <input type="number" value={form.precioPorMl} onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))} placeholder="0.00" min="0" step="0.01"
+                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                      </div>
+                      {/* Calcular stock desde botellas */}
+                      <div className="bg-zinc-900/80 border border-cyan-500/10 rounded-xl p-3 space-y-2">
+                        <p className="text-cyan-400 text-[11px] font-semibold uppercase tracking-wider">📦 Stock de botellas</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-zinc-400 text-xs block mb-1">ML por botella</label>
+                            <input type="number" value={form.ml_por_botella}
+                              onChange={(e) => {
+                                const ml = e.target.value;
+                                const bots = parseFloat(form.stock_botellas || form.cantidad_botellas) || 0;
+                                const total = (parseFloat(ml) || 0) * bots;
+                                setForm((f) => ({ ...f, ml_por_botella: ml, stockMl: total > 0 ? String(total) : f.stockMl }));
+                              }}
+                              placeholder="Ej: 30" min="0"
+                              className="w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                          </div>
+                          <div>
+                            <label className="text-zinc-400 text-xs block mb-1">Cantidad de botellas</label>
+                            <input type="number" value={form.stock_botellas || form.cantidad_botellas}
+                              onChange={(e) => {
+                                const bots = e.target.value;
+                                const ml = parseFloat(form.ml_por_botella) || 0;
+                                const total = ml * (parseFloat(bots) || 0);
+                                setForm((f) => ({ ...f, stock_botellas: bots, cantidad_botellas: bots, stockMl: total > 0 ? String(total) : f.stockMl }));
+                              }}
+                              placeholder="Ej: 10" min="0"
+                              className="w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                          </div>
+                        </div>
+                        {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.stock_botellas || form.cantidad_botellas) > 0 && (
+                          <div className="flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2">
+                            <span className="text-cyan-400 text-xs">= Stock total:</span>
+                            <span className="text-cyan-300 font-black text-sm">{(parseFloat(form.ml_por_botella) * parseFloat(form.stock_botellas || form.cantidad_botellas)).toFixed(0)} ML</span>
+                          </div>
+                        )}
+                      </div>
+                      {/* Stock ML calculado o manual */}
+                      <div>
+                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
+                          Stock total (ML) {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.stock_botellas || form.cantidad_botellas) > 0 ? <span className="text-cyan-500/70 normal-case">— auto-calculado</span> : ""}
+                        </label>
+                        <input type="number" value={form.stockMl} onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))} placeholder="0" min="0"
+                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
