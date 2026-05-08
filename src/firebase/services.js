@@ -39,6 +39,15 @@ export async function deleteProduct(productId) {
 }
 function buildProductPayload(data) {
   const isLiquidoDetallado = data.categoria === "Líquidos" && data.modoLiquido === "detallado";
+
+  // Calcular stockMl desde botellas si se proporcionan
+  let stockMlFinal = parseFloat(data.stockMl) || 0;
+  let mlPorBotella = parseFloat(data.ml_por_botella) || 0;
+  let cantidadBotellas = parseInt(data.cantidad_botellas, 10) || 0;
+  if (isLiquidoDetallado && mlPorBotella > 0 && cantidadBotellas > 0) {
+    stockMlFinal = mlPorBotella * cantidadBotellas;
+  }
+
   return {
     nombre:           String(data.nombre || "").trim(),
     marca:            String(data.marca  || "").trim(),
@@ -51,8 +60,10 @@ function buildProductPayload(data) {
     imageUrl:         data.imageUrl    || "",
     modoLiquido:      data.categoria === "Líquidos" ? (data.modoLiquido || "botella") : "botella",
     ...(isLiquidoDetallado && {
-      precioPorMl: parseFloat(data.precioPorMl) || 0,
-      stockMl:     parseFloat(data.stockMl)     || 0,  // siempre en ML
+      precioPorMl:      parseFloat(data.precioPorMl)  || 0,
+      stockMl:          stockMlFinal,
+      ml_por_botella:   mlPorBotella,
+      cantidad_botellas: cantidadBotellas,
     }),
     updatedAt: Timestamp.now(),
   };
@@ -152,12 +163,22 @@ export async function getSalesThisWeek()       { return queryVentas(startOfWeek(
 export async function getSalesThisMonth()      { return queryVentas(startOfMonth(),  endOfMonth()); }
 export async function getSalesByDate(date)     { return queryVentas(startOfDay(date), endOfDay(date)); }
 
-export function sumSales(sales = []) {
-  return sales.reduce((acc, v) => acc + (Number(v.total) || 0), 0);
+export function sumSales(sales = [], { soloReales = false } = {}) {
+  return sales.reduce((acc, v) => {
+    // Si soloReales=true, excluir ventas fiadas pendientes de cobro
+    if (soloReales && v.esVentaFiada && v.estadoCobro !== "cobrado") return acc;
+    return acc + (Number(v.total) || 0);
+  }, 0);
+}
+// Calcula ingresos reales (excluye fiado pendiente)
+export function sumRealIncome(sales = []) {
+  return sumSales(sales, { soloReales: true });
 }
 export function groupSalesByDay(sales = []) {
   const map = {};
   for (const v of sales) {
+    // Solo contar ingresos reales en el gráfico de barras
+    if (v.esVentaFiada && v.estadoCobro !== "cobrado") continue;
     const key = v.fechaISO?.slice(0,10) ?? v.fecha?.toDate?.()?.toISOString().slice(0,10) ?? "sin-fecha";
     if (!map[key]) map[key] = { total: 0, count: 0 };
     map[key].total += Number(v.total) || 0; map[key].count += 1;

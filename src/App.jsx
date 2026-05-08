@@ -37,6 +37,7 @@ import {
   getVentasFiadoPendientes,
   marcarFiadoCobrado,
   sumSales,
+  sumRealIncome,
   groupSalesByDay,
   salesByMethod,
 } from "./firebase/services";
@@ -1037,18 +1038,22 @@ function DashboardView({ products, sales: salesToday }) {
 
   const chartData  = groupSalesByDay(salesData);
   const byMethod   = salesByMethod(salesData);
-  const totalSales = sumSales(salesData);
-  const avgTicket  = salesData.length > 0 ? totalSales / salesData.length : 0;
+  const totalSales = sumSales(salesData);          // todas las ventas (para el gráfico por método)
+  const totalReal  = sumRealIncome(salesData);     // solo ingresos reales (fiado cobrado + efectivo/tarjeta/transf)
+  const totalFiadoPendiente = byMethod.fiado - salesData.filter(v => v.esVentaFiada && v.estadoCobro === "cobrado").reduce((s,v) => s + (Number(v.total)||0), 0);
+  const avgTicket  = salesData.filter(v => !(v.esVentaFiada && v.estadoCobro !== "cobrado")).length > 0
+    ? totalReal / salesData.filter(v => !(v.esVentaFiada && v.estadoCobro !== "cobrado")).length
+    : 0;
   const topProds   = getTopProducts(salesData, 6);
 
   const lowStock  = products.filter((p) => p.stock > 0  && p.stock <= 5);
   const outStock  = products.filter((p) => p.stock === 0);
 
   const kpis = [
-    { label: "Total Ventas",    value: formatCurrency(totalSales),     icon: DollarSign,   color: "orange", sub: `${salesData.length} transacciones` },
-    { label: "Ticket Promedio", value: formatCurrency(avgTicket),       icon: TrendingUp,   color: "blue",   sub: "Por venta" },
-    { label: "Fiado",           value: formatCurrency(byMethod.fiado), icon: Clock,        color: "amber",  sub: "Pendiente de cobro" },
-    { label: "Sin Stock",       value: outStock.length,                 icon: Package,      color: "red",    sub: "Agotados" },
+    { label: "Ingresos Reales",  value: formatCurrency(totalReal),                icon: DollarSign,   color: "orange", sub: `${salesData.filter(v => !(v.esVentaFiada && v.estadoCobro !== "cobrado")).length} transacciones cobradas` },
+    { label: "Ticket Promedio",  value: formatCurrency(avgTicket),                 icon: TrendingUp,   color: "blue",   sub: "Por venta cobrada" },
+    { label: "Fiado Pendiente",  value: formatCurrency(byMethod.fiado - salesData.filter(v => v.esVentaFiada && v.estadoCobro === "cobrado").reduce((s,v) => s+(Number(v.total)||0),0)), icon: Clock, color: "amber", sub: "Pendiente de cobro" },
+    { label: "Sin Stock",        value: outStock.length,                            icon: Package,      color: "red",    sub: "Agotados" },
   ];
 
   const colorMap = {
@@ -1164,9 +1169,15 @@ function DashboardView({ products, sales: salesToday }) {
               })}
             </div>
           )}
-          <div className="border-t border-zinc-800/60 mt-4 pt-3 flex justify-between">
-            <span className="text-zinc-400 text-xs">Total período</span>
-            <span className="text-orange-400 font-black text-sm">{formatCurrency(totalSales)}</span>
+          <div className="border-t border-zinc-800/60 mt-4 pt-3 space-y-1">
+            <div className="flex justify-between">
+              <span className="text-zinc-400 text-xs">Total período (bruto)</span>
+              <span className="text-zinc-400 text-xs font-semibold">{formatCurrency(totalSales)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400 text-xs">Ingresos reales cobrados</span>
+              <span className="text-orange-400 font-black text-sm">{formatCurrency(totalReal)}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1450,6 +1461,7 @@ const EMPTY_PRODUCT = {
   precio: "", stock: "", descripcion: "", niveles_nicotina: [],
   imageBase64: "", imageUrl: "",
   modoLiquido: "botella", precioPorMl: "", stockMl: "",
+  ml_por_botella: "", cantidad_botellas: "",
 };
 
 function InventoryView({ products }) {
@@ -1496,6 +1508,8 @@ function InventoryView({ products }) {
       modoLiquido:      p.modoLiquido || "botella",
       precioPorMl:      String(p.precioPorMl || ""),
       stockMl:          String(p.stockMl     || ""),
+      ml_por_botella:   String(p.ml_por_botella || ""),
+      cantidad_botellas: String(p.cantidad_botellas || ""),
     });
     setImgPreview(p.imageBase64 || p.imageUrl || "");
     setImgError("");
@@ -1799,20 +1813,7 @@ function InventoryView({ products }) {
                       </button>
                     ))}
                   </div>
-                  {form.modoLiquido === "detallado" && (
-                    <div className="grid grid-cols-2 gap-3 mt-2">
-                      <div>
-                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Precio por ML (RD$)</label>
-                        <input type="number" value={form.precioPorMl} onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))} placeholder="0.00" min="0" step="0.01"
-                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                      </div>
-                      <div>
-                        <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Stock total (ML)</label>
-                        <input type="number" value={form.stockMl} onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))} placeholder="0" min="0"
-                          className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                      </div>
-                    </div>
-                  )}
+                  {form.modoLiquido === "detallado" && (\n                    <div className=\"space-y-3 mt-2\">\n                      {/* Precio por ML */}\n                      <div>\n                        <label className=\"text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5\">Precio por ML (RD$)</label>\n                        <input type=\"number\" value={form.precioPorMl} onChange={(e) => setForm((f) => ({ ...f, precioPorMl: e.target.value }))} placeholder=\"0.00\" min=\"0\" step=\"0.01\"\n                          className=\"w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                      </div>\n                      {/* Calcular stock desde botellas */}\n                      <div className=\"bg-zinc-900/80 border border-cyan-500/10 rounded-xl p-3 space-y-2\">\n                        <p className=\"text-cyan-400 text-[11px] font-semibold uppercase tracking-wider\">📦 Calcular stock desde botellas</p>\n                        <div className=\"grid grid-cols-2 gap-2\">\n                          <div>\n                            <label className=\"text-zinc-400 text-xs block mb-1\">ML por botella</label>\n                            <input type=\"number\" value={form.ml_por_botella}\n                              onChange={(e) => {\n                                const ml = e.target.value;\n                                const bots = parseFloat(form.cantidad_botellas) || 0;\n                                const total = (parseFloat(ml) || 0) * bots;\n                                setForm((f) => ({ ...f, ml_por_botella: ml, stockMl: total > 0 ? String(total) : f.stockMl }));\n                              }}\n                              placeholder=\"Ej: 30\" min=\"0\"\n                              className=\"w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                          </div>\n                          <div>\n                            <label className=\"text-zinc-400 text-xs block mb-1\">Cantidad de botellas</label>\n                            <input type=\"number\" value={form.cantidad_botellas}\n                              onChange={(e) => {\n                                const bots = e.target.value;\n                                const ml = parseFloat(form.ml_por_botella) || 0;\n                                const total = ml * (parseFloat(bots) || 0);\n                                setForm((f) => ({ ...f, cantidad_botellas: bots, stockMl: total > 0 ? String(total) : f.stockMl }));\n                              }}\n                              placeholder=\"Ej: 10\" min=\"0\"\n                              className=\"w-full bg-zinc-800 border border-zinc-700 text-white placeholder-zinc-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                          </div>\n                        </div>\n                        {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.cantidad_botellas) > 0 && (\n                          <div className=\"flex items-center gap-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2\">\n                            <span className=\"text-cyan-400 text-xs\">= Stock total:</span>\n                            <span className=\"text-cyan-300 font-black text-sm\">{(parseFloat(form.ml_por_botella) * parseFloat(form.cantidad_botellas)).toFixed(0)} ML</span>\n                          </div>\n                        )}\n                      </div>\n                      {/* Stock ML manual (o calculado) */}\n                      <div>\n                        <label className=\"text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5\">\n                          Stock total (ML) {parseFloat(form.ml_por_botella) > 0 && parseFloat(form.cantidad_botellas) > 0 ? <span className=\"text-cyan-500/70 normal-case\">— auto-calculado</span> : \"\"}\n                        </label>\n                        <input type=\"number\" value={form.stockMl} onChange={(e) => setForm((f) => ({ ...f, stockMl: e.target.value }))} placeholder=\"0\" min=\"0\"\n                          className=\"w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all\" />\n                      </div>\n                    </div>\n                  )}
                 </div>
               )}
 
