@@ -59,7 +59,9 @@ function buildProductPayload(data) {
   const cantidadBotellas     = parseInt(data.cantidad_botellas, 10) || 0;
   const stockBotellas        = parseInt(data.stock_botellas ?? data.cantidad_botellas, 10) || 0;
   const precioCostoBotella   = parseFloat(data.precio_costo_botella || data.precioCostoBotella) || 0;
-  // precioPorMl = precio de venta al cliente; si no viene, se calcula desde precio_costo_botella / ml
+  // precio_botella = precio de VENTA al cliente por botella cerrada
+  const precioBotella        = parseFloat(data.precio_botella) || 0;
+  // precioPorMl = precio de venta al cliente por ml (usado en modo ML)
   const precioPorMl          = parseFloat(data.precioPorMl || data.precio_por_botella) || 0;
 
   // stock_total_ml siempre calculado desde botellas × ml
@@ -81,7 +83,8 @@ function buildProductPayload(data) {
     modoLiquido:      isLiquido ? "detallado" : "botella",
     ...(isLiquido && {
       precioPorMl,
-      precio_costo_botella:  precioCostoBotella,
+      precio_botella:        precioBotella,        // precio de venta por botella cerrada (POS)
+      precio_costo_botella:  precioCostoBotella,   // costo interno de compra
       ml_por_botella:        mlPorBotella,
       stock_botellas:        stockBotellas,
       stock_total_ml:        totalMlDisponibles,

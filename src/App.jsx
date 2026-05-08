@@ -495,15 +495,18 @@ function POSView({ products, sales, user }) {
     if (!product) return;
     const botellas = product.stock_botellas ?? product.stock ?? 0;
     if (botellas < 1) return;
-    // Precio de lista de botella = precioPorMl * ml_por_botella
-    const precioLista = (parseFloat(product.precioPorMl) || 0) * (parseFloat(product.ml_por_botella) || 0);
+    // Usa precio_botella (precio de venta registrado en inventario).
+    // Fallback: precioPorMl * ml_por_botella si el campo aún no existe en el doc.
+    const precioVenta = parseFloat(product.precio_botella) > 0
+      ? parseFloat(product.precio_botella)
+      : (parseFloat(product.precioPorMl) || 0) * (parseFloat(product.ml_por_botella) || 0);
     const key = `botella-${product.id}-${Date.now()}`;
     setCart((prev) => [...prev, {
       key,
       id:               product.id,
       nombre:           product.nombre,
       marca:            product.marca,
-      precio:           precioLista,
+      precio:           precioVenta,       // ← precio real de venta
       qty:              1,
       esLiquidoBotella: true,
       mlPorBotella:     product.ml_por_botella || 0,
@@ -746,7 +749,11 @@ function POSView({ products, sales, user }) {
                 <span className="text-3xl">🍾</span>
                 <span className="text-white font-bold text-sm">Botella completa</span>
                 <span className="text-zinc-500 text-xs text-center">
-                  {formatCurrency((parseFloat(liquidTipoModal.precioPorMl) || 0) * (parseFloat(liquidTipoModal.ml_por_botella) || 0))} · {liquidTipoModal.ml_por_botella || "?"}ml
+                  {formatCurrency(
+                    parseFloat(liquidTipoModal.precio_botella) > 0
+                      ? parseFloat(liquidTipoModal.precio_botella)
+                      : (parseFloat(liquidTipoModal.precioPorMl) || 0) * (parseFloat(liquidTipoModal.ml_por_botella) || 0)
+                  )} · {liquidTipoModal.ml_por_botella || "?"}ml
                 </span>
                 <span className="text-cyan-400 text-xs font-semibold">
                   {liquidTipoModal.stock_botellas ?? liquidTipoModal.stock ?? 0} disp.
@@ -1564,6 +1571,7 @@ const EMPTY_PRODUCT = {
   precioPorMl: "", stockMl: "",
   ml_por_botella: "", cantidad_botellas: "", stock_botellas: "",
   precio_costo_botella: "",
+  precio_botella: "",
 };
 
 function InventoryView({ products }) {
@@ -1613,6 +1621,7 @@ function InventoryView({ products }) {
       cantidad_botellas: String(p.cantidad_botellas || ""),
       stock_botellas:   String(p.stock_botellas ?? p.cantidad_botellas ?? ""),
       precio_costo_botella: String(p.precio_costo_botella || ""),
+      precio_botella:       String(p.precio_botella || ""),
     });
     setImgPreview(p.imageBase64 || p.imageUrl || "");
     setImgError("");
@@ -1937,13 +1946,25 @@ function InventoryView({ products }) {
                   {/* Precio costo por botella */}
                   <div>
                     <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
-                      Precio costo / botella (RD$) <span className="text-cyan-500">*</span>
+                      Precio costo / botella (RD$)
                     </label>
                     <input type="number" value={form.precio_costo_botella}
                       onChange={(e) => setForm((f) => ({ ...f, precio_costo_botella: e.target.value }))}
                       placeholder="Ej: 150.00" min="0" step="0.01"
                       className="w-full bg-zinc-900 border border-cyan-700/50 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-cyan-500/60 transition-all" />
-                    <p className="text-zinc-600 text-[10px] mt-1">Costo interno de compra. El precio de venta se define en el POS al momento de la venta.</p>
+                    <p className="text-zinc-600 text-[10px] mt-1">Costo interno de compra (referencia).</p>
+                  </div>
+
+                  {/* Precio de venta por botella cerrada */}
+                  <div>
+                    <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">
+                      Precio venta botella cerrada (RD$) <span className="text-cyan-500">*</span>
+                    </label>
+                    <input type="number" value={form.precio_botella}
+                      onChange={(e) => setForm((f) => ({ ...f, precio_botella: e.target.value }))}
+                      placeholder="Ej: 250.00" min="0" step="0.01"
+                      className="w-full bg-zinc-900 border border-orange-500/40 text-white placeholder-zinc-600 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-orange-500/60 transition-all" />
+                    <p className="text-zinc-600 text-[10px] mt-1">Lo que cobra el POS al vender botella cerrada.</p>
                   </div>
                 </div>
               )}
