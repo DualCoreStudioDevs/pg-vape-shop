@@ -304,6 +304,30 @@ export async function marcarFiadoCobrado(ventaId) {
   return { success: true };
 }
 
+/**
+ * Edita campos de una venta a crédito pendiente.
+ * Solo se permiten modificar: clienteNombre, clienteTelefono y total.
+ * NO toca inventario ni estructura de items (para no romper reportes).
+ */
+export async function editarVentaCredito(ventaId, { clienteNombre, clienteTelefono, total }) {
+  const updates = { updatedAt: Timestamp.now() };
+  if (clienteNombre  !== undefined) updates.clienteNombre   = String(clienteNombre).trim();
+  if (clienteTelefono !== undefined) updates.clienteTelefono = String(clienteTelefono).trim();
+  if (total           !== undefined) updates.total           = Number(total) || 0;
+  await updateDoc(doc(db, "ventas", ventaId), updates);
+  return { success: true };
+}
+
+/**
+ * Elimina físicamente una venta a crédito de Firestore.
+ * Úsalo SOLO para corregir errores de digitación en ventas pendientes.
+ * Las ventas ya "cobradas" no deberían eliminarse (afectarían reportes históricos).
+ */
+export async function eliminarVentaCredito(ventaId) {
+  await deleteDoc(doc(db, "ventas", ventaId));
+  return { success: true };
+}
+
 // ── 5. ESTADÍSTICAS ───────────────────────────────────────────
 const startOfDay   = (d = new Date()) => { const x=new Date(d); x.setHours(0,0,0,0); return x; };
 const endOfDay     = (d = new Date()) => { const x=new Date(d); x.setHours(23,59,59,999); return x; };

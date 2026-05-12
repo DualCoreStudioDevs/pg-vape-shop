@@ -11,7 +11,7 @@ import {
   Search, X, Check, AlertTriangle, Zap, TrendingUp, DollarSign,
   ShoppingBag, Eye, EyeOff, Lock, User, ChevronRight, Tag,
   RefreshCw, Clock, Layers, ArrowUpRight, Flame, Box, Printer,
-  Image, Calendar, Activity,
+  Image, Calendar, Activity, Pencil,
 } from "lucide-react";
 
 import { initializeApp } from "firebase/app";
@@ -36,6 +36,8 @@ import {
   getTopProducts,
   getVentasFiadoPendientes,
   marcarFiadoCobrado,
+  editarVentaCredito,
+  eliminarVentaCredito,
   sumSales,
   sumRealIncome,
   groupSalesByDay,
@@ -552,7 +554,6 @@ function POSView({ products, sales, user }) {
     setSaleError("");
     if (fiadoMode) {
       if (!fiadoNombre.trim()) { setSaleError("El nombre del cliente es obligatorio para registrar un crédito."); return; }
-      if (!fiadoTelefono.trim()) { setSaleError("El teléfono del cliente es obligatorio para registrar un crédito."); return; }
     }
     setProcessing(true);
     try {
@@ -1015,7 +1016,7 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
         {fiadoMode ? (
           <div className="space-y-3 mb-5 bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
             <p className="text-amber-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5" /> Datos del Cliente (Obligatorio)
+              <User className="w-3.5 h-3.5" /> Datos del Cliente
             </p>
             <input
               type="text"
@@ -1026,10 +1027,10 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
             />
             <input
               type="tel"
-              placeholder="Teléfono *"
+              placeholder="Teléfono (opcional)"
               value={fiadoTelefono}
               onChange={(e) => setFiadoTelefono(e.target.value)}
-              className="w-full bg-zinc-900 border border-amber-700/50 text-white placeholder-zinc-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
+              className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/40 transition-all"
             />
           </div>
         ) : (
@@ -1384,11 +1385,20 @@ function DashboardView({ products, sales: salesToday }) {
 // CRÉDITO VIEW — Cuentas por Cobrar
 // ============================================================
 function FiadoView() {
-  const [fiados,   setFiados]   = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [marking,  setMarking]  = useState(null);
-  const [search,   setSearch]   = useState("");
-  const [error,    setError]    = useState(null);
+  const [fiados,      setFiados]      = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [marking,     setMarking]     = useState(null);
+  const [deleting,    setDeleting]    = useState(null);
+  const [search,      setSearch]      = useState("");
+  const [error,       setError]       = useState(null);
+
+  // ── Estado del modal de edición ──
+  const [editTarget,  setEditTarget]  = useState(null);
+  const [editNombre,  setEditNombre]  = useState("");
+  const [editTel,     setEditTel]     = useState("");
+  const [editTotal,   setEditTotal]   = useState("");
+  const [editSaving,  setEditSaving]  = useState(false);
+  const [editError,   setEditError]   = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -1406,6 +1416,7 @@ function FiadoView() {
 
   useEffect(() => { load(); }, []);
 
+  // ── Marcar pagado ──
   const handleCobrar = async (id) => {
     if (!window.confirm("¿Marcar esta deuda como pagada?")) return;
     setMarking(id);
@@ -1414,6 +1425,52 @@ function FiadoView() {
       setFiados((prev) => prev.filter((f) => f.id !== id));
     } catch(err) { alert("Error: " + err.message); }
     finally { setMarking(null); }
+  };
+
+  // ── Eliminar ──
+  const handleEliminar = async (f) => {
+    if (!window.confirm(`¿Eliminar el crédito de "${f.clienteNombre || "este cliente"}"?\nEsta acción no se puede deshacer.`)) return;
+    setDeleting(f.id);
+    try {
+      await eliminarVentaCredito(f.id);
+      setFiados((prev) => prev.filter((v) => v.id !== f.id));
+    } catch(err) { alert("Error al eliminar: " + err.message); }
+    finally { setDeleting(null); }
+  };
+
+  // ── Abrir modal de edición ──
+  const openEdit = (f) => {
+    setEditTarget(f);
+    setEditNombre(f.clienteNombre || "");
+    setEditTel(f.clienteTelefono || "");
+    setEditTotal(String(f.total || ""));
+    setEditError("");
+  };
+
+  // ── Guardar edición ──
+  const handleSaveEdit = async () => {
+    if (!editNombre.trim()) { setEditError("El nombre del cliente es obligatorio."); return; }
+    const parsedTotal = parseFloat(editTotal);
+    if (isNaN(parsedTotal) || parsedTotal < 0) { setEditError("El monto debe ser un número válido."); return; }
+    setEditSaving(true);
+    setEditError("");
+    try {
+      await editarVentaCredito(editTarget.id, {
+        clienteNombre:   editNombre.trim(),
+        clienteTelefono: editTel.trim(),
+        total:           parsedTotal,
+      });
+      setFiados((prev) => prev.map((f) =>
+        f.id === editTarget.id
+          ? { ...f, clienteNombre: editNombre.trim(), clienteTelefono: editTel.trim(), total: parsedTotal }
+          : f
+      ));
+      setEditTarget(null);
+    } catch(err) {
+      setEditError("Error al guardar: " + err.message);
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   const totalPendiente = fiados.reduce((s, f) => s + (Number(f.total)||0), 0);
@@ -1425,6 +1482,78 @@ function FiadoView() {
 
   return (
     <div className="p-4 lg:p-6 max-w-5xl mx-auto space-y-5">
+
+      {/* ── Modal de Edición ── */}
+      {editTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setEditTarget(null)}>
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+          <div className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-white font-bold text-lg flex items-center gap-2">
+                <Pencil className="w-5 h-5 text-amber-400" /> Editar Crédito
+              </h3>
+              <button onClick={() => setEditTarget(null)} className="text-zinc-500 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 mb-5">
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Nombre del Cliente *</label>
+                <input
+                  type="text"
+                  value={editNombre}
+                  onChange={(e) => setEditNombre(e.target.value)}
+                  placeholder="Nombre completo"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
+                />
+              </div>
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Teléfono <span className="normal-case font-normal text-zinc-600">(opcional)</span></label>
+                <input
+                  type="tel"
+                  value={editTel}
+                  onChange={(e) => setEditTel(e.target.value)}
+                  placeholder="Ej. 809-555-0000"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
+                />
+              </div>
+              <div>
+                <label className="text-zinc-400 text-xs font-semibold uppercase tracking-wider block mb-1.5">Monto Total (RD$)</label>
+                <input
+                  type="number"
+                  value={editTotal}
+                  onChange={(e) => setEditTotal(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-white placeholder-zinc-600 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-amber-500/60 transition-all"
+                />
+              </div>
+            </div>
+
+            {editError && (
+              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 mb-4">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <p className="text-red-400 text-sm">{editError}</p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button onClick={() => setEditTarget(null)} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold rounded-xl py-3 text-sm transition-colors">
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={editSaving}
+                className="flex-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2"
+              >
+                {editSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Guardar Cambios</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Encabezado ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-white font-black text-2xl flex items-center gap-2">
@@ -1443,7 +1572,7 @@ function FiadoView() {
         </div>
       </div>
 
-      {/* Búsqueda */}
+      {/* ── Búsqueda ── */}
       <div className="relative max-w-sm">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
         <input
@@ -1453,6 +1582,7 @@ function FiadoView() {
         />
       </div>
 
+      {/* ── Contenido ── */}
       {loading ? (
         <div className="flex justify-center py-16"><RefreshCw className="w-6 h-6 text-amber-400 animate-spin" /></div>
       ) : error ? (
@@ -1460,10 +1590,7 @@ function FiadoView() {
           <div className="bg-red-500/10 border border-red-500/25 rounded-2xl px-6 py-5 text-center max-w-md">
             <p className="text-red-400 font-bold mb-1">Error al cargar créditos</p>
             <p className="text-zinc-500 text-sm mb-4">{error}</p>
-            <button
-              onClick={load}
-              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium px-4 py-2 rounded-xl transition-colors flex items-center gap-2 mx-auto"
-            >
+            <button onClick={load} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium px-4 py-2 rounded-xl transition-colors flex items-center gap-2 mx-auto">
               <RefreshCw className="w-4 h-4" /> Reintentar
             </button>
           </div>
@@ -1476,10 +1603,13 @@ function FiadoView() {
       ) : (
         <div className="space-y-3">
           {filtered.map((f) => {
-            const fecha = f.fecha?.toDate?.() ?? new Date(f.fechaISO);
+            const fecha      = f.fecha?.toDate?.() ?? new Date(f.fechaISO);
+            const isDeleting = deleting === f.id;
+            const isMarking  = marking  === f.id;
             return (
-              <div key={f.id} className="bg-zinc-900/60 border border-amber-500/20 rounded-2xl p-4 hover:border-amber-500/40 transition-all">
-                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+              <div key={f.id} className="bg-zinc-900/60 border border-amber-500/20 rounded-2xl p-4 hover:border-amber-500/35 transition-all">
+                <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+
                   {/* Info cliente */}
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <div className="w-10 h-10 rounded-full bg-amber-500/15 border border-amber-500/25 flex items-center justify-center shrink-0">
@@ -1487,7 +1617,7 @@ function FiadoView() {
                     </div>
                     <div className="min-w-0">
                       <p className="text-white font-bold truncate">{f.clienteNombre || "—"}</p>
-                      <p className="text-zinc-400 text-sm">{f.clienteTelefono || "Sin teléfono"}</p>
+                      <p className="text-zinc-400 text-sm">{f.clienteTelefono || <span className="text-zinc-600 italic text-xs">Sin teléfono</span>}</p>
                     </div>
                   </div>
 
@@ -1506,22 +1636,46 @@ function FiadoView() {
                     </div>
                   </div>
 
-                  {/* Total + acción */}
-                  <div className="flex items-center gap-3 sm:flex-col sm:items-end">
+                  {/* Total + acciones */}
+                  <div className="flex sm:flex-col items-center sm:items-end gap-3 shrink-0">
                     <div className="text-right">
                       <p className="text-amber-400 font-black text-xl">{formatCurrency(f.total)}</p>
                       <p className="text-zinc-600 text-xs">
                         {fecha.toLocaleDateString("es-DO", { day: "2-digit", month: "short" })} · {fecha.toLocaleTimeString("es-DO", { hour:"2-digit", minute:"2-digit" })}
                       </p>
                     </div>
-                    <button
-                      onClick={() => handleCobrar(f.id)}
-                      disabled={marking === f.id}
-                      className="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 hover:border-emerald-500/60 text-emerald-400 font-bold px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 disabled:opacity-50 shrink-0"
-                    >
-                      {marking === f.id ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Pagado</>}
-                    </button>
+
+                    <div className="flex items-center gap-2">
+                      {/* Editar */}
+                      <button
+                        onClick={() => openEdit(f)}
+                        title="Editar"
+                        className="bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-500 text-zinc-400 hover:text-white p-2 rounded-xl transition-all"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Eliminar */}
+                      <button
+                        onClick={() => handleEliminar(f)}
+                        disabled={isDeleting || isMarking}
+                        title="Eliminar"
+                        className="bg-zinc-800 hover:bg-red-500/15 border border-zinc-700 hover:border-red-500/40 text-zinc-400 hover:text-red-400 p-2 rounded-xl transition-all disabled:opacity-40"
+                      >
+                        {isDeleting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
+
+                      {/* Pagado */}
+                      <button
+                        onClick={() => handleCobrar(f.id)}
+                        disabled={isMarking || isDeleting}
+                        className="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 hover:border-emerald-500/60 text-emerald-400 font-bold px-3 py-2 rounded-xl text-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {isMarking ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Pagado</>}
+                      </button>
+                    </div>
                   </div>
+
                 </div>
               </div>
             );
