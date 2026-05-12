@@ -1427,9 +1427,26 @@ function FiadoView() {
     finally { setMarking(null); }
   };
 
-  // ── Eliminar ──
+  // ── Eliminar con reversión de inventario ──
   const handleEliminar = async (f) => {
-    if (!window.confirm(`¿Eliminar el crédito de "${f.clienteNombre || "este cliente"}"?\nEsta acción no se puede deshacer.`)) return;
+    // Construir resumen de productos para el mensaje de confirmación
+    const itemsSummary = (f.items || [])
+      .slice(0, 3)
+      .map((item) =>
+        item.esLiquidoDetallado
+          ? `• ${item.productName} (${item.mlAmount}ml)`
+          : `• ${item.quantity}× ${item.productName}`
+      )
+      .join("\n");
+    const extraItems = (f.items || []).length > 3 ? `\n• +${f.items.length - 3} producto(s) más...` : "";
+
+    const confirmMsg =
+      `¿Eliminar el crédito de "${f.clienteNombre || "este cliente"}"?\n\n` +
+      `⚠️ Esto devolverá los siguientes productos al inventario:\n` +
+      `${itemsSummary}${extraItems}\n\n` +
+      `Esta acción no se puede deshacer.`;
+
+    if (!window.confirm(confirmMsg)) return;
     setDeleting(f.id);
     try {
       await eliminarVentaCredito(f.id);
@@ -1671,7 +1688,7 @@ function FiadoView() {
                         disabled={isMarking || isDeleting}
                         className="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 hover:border-emerald-500/60 text-emerald-400 font-bold px-3 py-2 rounded-xl text-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
                       >
-                        {isMarking ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Pagado</>}
+                        {isMarking ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Marcar como Pagado</>}
                       </button>
                     </div>
                   </div>

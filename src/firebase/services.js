@@ -295,11 +295,19 @@ export async function getVentasFiadoPendientes() {
   });
 }
 
-/** Cambia estadoCobro "pendiente" → "cobrado": a partir de aquí entra en KPIs */
+/**
+ * Marca un crédito como pagado:
+ *  - estadoCobro: "cobrado"    → entra en KPIs de Ingresos Reales
+ *  - estado:      "Completado" → refleja el estado final de la venta
+ *  - fechaCobro:  Timestamp    → registro de cuándo se cobró
+ * El Dashboard se actualiza automáticamente via onSnapshot.
+ */
 export async function marcarFiadoCobrado(ventaId) {
   await updateDoc(doc(db, "ventas", ventaId), {
     estadoCobro: "cobrado",
+    estado:      "Completado",
     fechaCobro:  Timestamp.now(),
+    updatedAt:   Timestamp.now(),
   });
   return { success: true };
 }
@@ -319,12 +327,96 @@ export async function editarVentaCredito(ventaId, { clienteNombre, clienteTelefo
 }
 
 /**
- * Elimina físicamente una venta a crédito de Firestore.
- * Úsalo SOLO para corregir errores de digitación en ventas pendientes.
- * Las ventas ya "cobradas" no deberían eliminarse (afectarían reportes históricos).
+ * Elimina una venta a crédito pendiente Y devuelve los productos al inventario.
+ *
+ * LÓGICA DE REVERTIDO DE STOCK (espejo exacto de completeSale):
+ *  A) esLiquidoDetallado  → devuelve mlAmount a total_ml_disponibles / stockMl / stock_total_ml
+ *                           y recalcula stock_botellas = Math.floor(nuevoMl / ml_por_botella)
+ *  B) esLiquidoBotella    → devuelve qty a stock_botellas y ml_por_botella*qty a total_ml_disponibles
+ *  C) Producto normal     → devuelve qty a stock
+ *
+ * Se ejecuta en una transacción atómica para garantizar integridad.
+ * Úsalo SOLO para ventas con estadoCobro:"pendiente" (corrección de errores).
  */
 export async function eliminarVentaCredito(ventaId) {
-  await deleteDoc(doc(db, "ventas", ventaId));
+  await runTransaction(db, async (transaction) => {
+    // 1. Leer la venta
+    const ventaRef  = doc(db, "ventas", ventaId);
+    const ventaSnap = await transaction.get(ventaRef);
+    if (!ventaSnap.exists()) throw new Error("La venta no existe o ya fue eliminada.");
+    const venta = ventaSnap.data();
+
+    // 2. Leer todos los productos involucrados
+    const items = venta.items || [];
+    const refs  = {};
+    const datos = {};
+    for (const item of items) {
+      const pid = item.productId;
+      if (!pid || refs[pid]) continue;
+      const ref  = doc(db, "productos", pid);
+      const snap = await transaction.get(ref);
+      if (snap.exists()) {
+        refs[pid]  = ref;
+        datos[pid] = snap.data();
+      }
+    }
+
+    // 3. Revertir stock por cada item
+    for (const item of items) {
+      const pid      = item.productId;
+      const producto = datos[pid];
+      if (!producto) continue; // producto eliminado — no bloquear
+
+      if (item.esLiquidoDetallado) {
+        // A) Líquido por ML — devolver mlAmount
+        const mlActual     = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
+        const mlRestaurado = mlActual + (Number(item.mlAmount) || 0);
+        const mlPorBot     = producto.ml_por_botella || 0;
+        const botellasSinc = mlPorBot > 0
+          ? Math.floor(mlRestaurado / mlPorBot)
+          : (producto.stock_botellas ?? 0);
+
+        transaction.update(refs[pid], {
+          total_ml_disponibles: mlRestaurado,
+          stock_total_ml:       mlRestaurado,
+          stockMl:              mlRestaurado,
+          stock_botellas:       botellasSinc,
+          updatedAt:            Timestamp.now(),
+        });
+
+      } else if (item.esLiquidoBotella) {
+        // B) Líquido botella completa — devolver qty botellas y ml
+        const qty          = Number(item.quantity) || 0;
+        const mlPorBot     = producto.ml_por_botella || 0;
+        const botActual    = producto.stock_botellas ?? producto.stock ?? 0;
+        const mlActual     = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
+        const botellasSinc = botActual + qty;
+        const mlRestaurado = mlActual + mlPorBot * qty;
+
+        transaction.update(refs[pid], {
+          stock_botellas:       botellasSinc,
+          total_ml_disponibles: mlRestaurado,
+          stock_total_ml:       mlRestaurado,
+          stockMl:              mlRestaurado,
+          stock:                botellasSinc,
+          updatedAt:            Timestamp.now(),
+        });
+
+      } else {
+        // C) Producto normal — devolver qty
+        const qty      = Number(item.quantity) || 0;
+        const actStock = producto.stock || 0;
+        transaction.update(refs[pid], {
+          stock:     actStock + qty,
+          updatedAt: Timestamp.now(),
+        });
+      }
+    }
+
+    // 4. Eliminar la venta
+    transaction.delete(ventaRef);
+  });
+
   return { success: true };
 }
 
