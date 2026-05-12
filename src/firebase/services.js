@@ -297,10 +297,11 @@ export async function getVentasFiadoPendientes() {
 
 /**
  * Marca un crédito como pagado:
- *  - estadoCobro: "cobrado"    → entra en KPIs de Ingresos Reales
- *  - estado:      "Completado" → refleja el estado final de la venta
- *  - fechaCobro:  Timestamp    → registro de cuándo se cobró
- * El Dashboard se actualiza automáticamente via onSnapshot.
+ *   estadoCobro: "cobrado"    → entra en KPIs de Ingresos Reales del Dashboard
+ *   estado:      "Completado" → estado legible final de la venta
+ *   fechaCobro:  Timestamp    → registro de cuándo se recibió el pago
+ *
+ * El Dashboard se actualiza solo gracias al onSnapshot en tiempo real de MainApp.
  */
 export async function marcarFiadoCobrado(ventaId) {
   await updateDoc(doc(db, "ventas", ventaId), {
@@ -327,93 +328,117 @@ export async function editarVentaCredito(ventaId, { clienteNombre, clienteTelefo
 }
 
 /**
- * Elimina una venta a crédito pendiente Y devuelve los productos al inventario.
+ * ✅ CORRECCIÓN PRINCIPAL — eliminarVentaCredito con reversión atómica de inventario
  *
- * LÓGICA DE REVERTIDO DE STOCK (espejo exacto de completeSale):
- *  A) esLiquidoDetallado  → devuelve mlAmount a total_ml_disponibles / stockMl / stock_total_ml
- *                           y recalcula stock_botellas = Math.floor(nuevoMl / ml_por_botella)
- *  B) esLiquidoBotella    → devuelve qty a stock_botellas y ml_por_botella*qty a total_ml_disponibles
- *  C) Producto normal     → devuelve qty a stock
+ * Ejecuta todo en una sola runTransaction para garantizar que nunca queden
+ * datos en un estado intermedio (stock desactualizado o venta huérfana).
  *
- * Se ejecuta en una transacción atómica para garantizar integridad.
- * Úsalo SOLO para ventas con estadoCobro:"pendiente" (corrección de errores).
+ * ORDEN DE OPERACIONES (crítico: todos los reads ANTES de cualquier write):
+ *   1. READ  → venta        (obtener items y cantidades)
+ *   2. READ  → productos    (stock actual de cada producto involucrado)
+ *   3. WRITE → productos    (sumar la cantidad que se cancela)
+ *   4. WRITE → venta        (eliminar el documento)
+ *
+ * LÓGICA DE REVERSIÓN — espejo inverso de completeSale:
+ *
+ *   A) esLiquidoDetallado = true  (venta por ml)
+ *      total_ml_disponibles  += item.mlAmount
+ *      stockMl / stock_total_ml = nuevo total
+ *      stock_botellas        = Math.floor(nuevoMl / ml_por_botella)  ← AUTO-SYNC
+ *
+ *   B) esLiquidoBotella = true  (botella completa)
+ *      stock_botellas        += item.quantity
+ *      total_ml_disponibles  += ml_por_botella × item.quantity
+ *      stockMl / stock_total_ml = nuevo total
+ *      stock                 = nuevo stock_botellas (alias retrocompat.)
+ *
+ *   C) Producto normal (unidades)
+ *      stock                 += item.quantity
+ *
+ * Si un producto fue eliminado del catálogo, se omite sin bloquear la operación.
  */
 export async function eliminarVentaCredito(ventaId) {
   await runTransaction(db, async (transaction) => {
-    // 1. Leer la venta
+
+    // ── FASE 1: Leer la venta ─────────────────────────────────
     const ventaRef  = doc(db, "ventas", ventaId);
     const ventaSnap = await transaction.get(ventaRef);
-    if (!ventaSnap.exists()) throw new Error("La venta no existe o ya fue eliminada.");
-    const venta = ventaSnap.data();
+    if (!ventaSnap.exists()) {
+      throw new Error("La venta no existe o ya fue eliminada.");
+    }
+    const items = ventaSnap.data().items || [];
 
-    // 2. Leer todos los productos involucrados
-    const items = venta.items || [];
-    const refs  = {};
-    const datos = {};
+    // ── FASE 2: Leer cada producto involucrado ────────────────
+    // Todos los reads deben ir aquí, antes del primer write.
+    const productoRefs  = {};
+    const productoSnaps = {};
     for (const item of items) {
       const pid = item.productId;
-      if (!pid || refs[pid]) continue;
+      if (!pid || productoRefs[pid]) continue; // omitir duplicados
       const ref  = doc(db, "productos", pid);
       const snap = await transaction.get(ref);
       if (snap.exists()) {
-        refs[pid]  = ref;
-        datos[pid] = snap.data();
+        productoRefs[pid]  = ref;
+        productoSnaps[pid] = snap.data();
       }
     }
 
-    // 3. Revertir stock por cada item
+    // ── FASE 3: Escribir reversión de stock ───────────────────
     for (const item of items) {
       const pid      = item.productId;
-      const producto = datos[pid];
-      if (!producto) continue; // producto eliminado — no bloquear
+      const ref      = productoRefs[pid];
+      const producto = productoSnaps[pid];
+      if (!ref || !producto) continue; // producto borrado del catálogo — no bloquear
 
       if (item.esLiquidoDetallado) {
-        // A) Líquido por ML — devolver mlAmount
+        // A) Líquido por ml ───────────────────────────────────
+        const mlDevueltos  = Number(item.mlAmount) || 0;
         const mlActual     = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
-        const mlRestaurado = mlActual + (Number(item.mlAmount) || 0);
+        const mlNuevo      = mlActual + mlDevueltos;
         const mlPorBot     = producto.ml_por_botella || 0;
         const botellasSinc = mlPorBot > 0
-          ? Math.floor(mlRestaurado / mlPorBot)
+          ? Math.floor(mlNuevo / mlPorBot)
           : (producto.stock_botellas ?? 0);
 
-        transaction.update(refs[pid], {
-          total_ml_disponibles: mlRestaurado,
-          stock_total_ml:       mlRestaurado,
-          stockMl:              mlRestaurado,
+        transaction.update(ref, {
+          total_ml_disponibles: mlNuevo,
+          stock_total_ml:       mlNuevo,
+          stockMl:              mlNuevo,
           stock_botellas:       botellasSinc,
           updatedAt:            Timestamp.now(),
         });
 
       } else if (item.esLiquidoBotella) {
-        // B) Líquido botella completa — devolver qty botellas y ml
-        const qty          = Number(item.quantity) || 0;
-        const mlPorBot     = producto.ml_por_botella || 0;
-        const botActual    = producto.stock_botellas ?? producto.stock ?? 0;
-        const mlActual     = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
-        const botellasSinc = botActual + qty;
-        const mlRestaurado = mlActual + mlPorBot * qty;
+        // B) Botella completa ─────────────────────────────────
+        const qtyDevuelta = Number(item.quantity) || 0;
+        const mlPorBot    = producto.ml_por_botella || 0;
+        const botActual   = producto.stock_botellas ?? producto.stock ?? 0;
+        const mlActual    = producto.total_ml_disponibles ?? producto.stockMl ?? 0;
+        const botNuevo    = botActual + qtyDevuelta;
+        const mlNuevo     = mlActual  + mlPorBot * qtyDevuelta;
 
-        transaction.update(refs[pid], {
-          stock_botellas:       botellasSinc,
-          total_ml_disponibles: mlRestaurado,
-          stock_total_ml:       mlRestaurado,
-          stockMl:              mlRestaurado,
-          stock:                botellasSinc,
+        transaction.update(ref, {
+          stock_botellas:       botNuevo,
+          total_ml_disponibles: mlNuevo,
+          stock_total_ml:       mlNuevo,
+          stockMl:              mlNuevo,
+          stock:                botNuevo,
           updatedAt:            Timestamp.now(),
         });
 
       } else {
-        // C) Producto normal — devolver qty
-        const qty      = Number(item.quantity) || 0;
-        const actStock = producto.stock || 0;
-        transaction.update(refs[pid], {
-          stock:     actStock + qty,
+        // C) Producto normal por unidades ─────────────────────
+        const qtyDevuelta = Number(item.quantity) || 0;
+        const stockActual = producto.stock || 0;
+
+        transaction.update(ref, {
+          stock:     stockActual + qtyDevuelta,
           updatedAt: Timestamp.now(),
         });
       }
     }
 
-    // 4. Eliminar la venta
+    // ── FASE 4: Eliminar la venta (último write) ──────────────
     transaction.delete(ventaRef);
   });
 
