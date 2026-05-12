@@ -368,7 +368,7 @@ function MainApp({ user }) {
     { id: "pos",       label: "Punto de Venta", icon: ShoppingCart },
     { id: "dashboard", label: "Dashboard",       icon: BarChart3    },
     { id: "inventory", label: "Inventario",      icon: Package      },
-    { id: "fiado",     label: "Fiado",           icon: Clock        },
+    { id: "fiado",     label: "Crédito",         icon: Clock        },
   ];
 
   return (
@@ -551,8 +551,8 @@ function POSView({ products, sales, user }) {
   const confirmSale = async () => {
     setSaleError("");
     if (fiadoMode) {
-      if (!fiadoNombre.trim()) { setSaleError("El nombre del cliente es obligatorio para fiar."); return; }
-      if (!fiadoTelefono.trim()) { setSaleError("El teléfono del cliente es obligatorio para fiar."); return; }
+      if (!fiadoNombre.trim()) { setSaleError("El nombre del cliente es obligatorio para registrar un crédito."); return; }
+      if (!fiadoTelefono.trim()) { setSaleError("El teléfono del cliente es obligatorio para registrar un crédito."); return; }
     }
     setProcessing(true);
     try {
@@ -699,7 +699,7 @@ function POSView({ products, sales, user }) {
             className="w-full bg-zinc-800 hover:bg-amber-500/20 border border-zinc-700 hover:border-amber-500/50 disabled:opacity-30 disabled:cursor-not-allowed text-amber-400 font-bold rounded-xl py-2.5 text-sm transition-all flex items-center justify-center gap-2"
           >
             <Clock className="w-4 h-4" />
-            Fiar
+            Venta a Crédito
           </button>
         </div>
       </div>
@@ -982,7 +982,7 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
       <div className="relative bg-[#1a1a1a] border border-zinc-700/60 rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h3 className="text-white font-bold text-lg flex items-center gap-2">
-            {fiadoMode ? <><Clock className="w-5 h-5 text-amber-400" /> Registrar como Fiado</> : "Confirmar Venta"}
+            {fiadoMode ? <><Clock className="w-5 h-5 text-amber-400" /> Registrar como Crédito</> : "Confirmar Venta"}
           </h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
         </div>
@@ -1007,7 +1007,7 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
 
         {/* Total */}
         <div className={`flex justify-between items-center mb-5 border rounded-xl px-4 py-3 ${fiadoMode ? "bg-amber-500/10 border-amber-500/20" : "bg-orange-500/10 border-orange-500/20"}`}>
-          <span className={`font-semibold ${fiadoMode ? "text-amber-300" : "text-orange-300"}`}>Total {fiadoMode ? "a Fiar" : "a Cobrar"}</span>
+          <span className={`font-semibold ${fiadoMode ? "text-amber-300" : "text-orange-300"}`}>Total {fiadoMode ? "a Crédito" : "a Cobrar"}</span>
           <span className={`font-black text-2xl ${fiadoMode ? "text-amber-400" : "text-orange-400"}`}>{formatCurrency(total)}</span>
         </div>
 
@@ -1084,7 +1084,7 @@ function SaleModal({ cart, total, paymentMethod, setPaymentMethod, amountPaid, s
             disabled={processing || (!fiadoMode && paymentMethod === "efectivo" && amountPaid && change < 0)}
             className={`flex-1 ${fiadoMode ? "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 shadow-amber-500/30" : "bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 shadow-orange-500/30"} disabled:opacity-40 text-white font-bold rounded-xl py-3 text-sm transition-all shadow-lg flex items-center justify-center gap-2`}
           >
-            {processing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" />{fiadoMode ? "Registrar Fiado" : "Confirmar"}</>}
+            {processing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" />{fiadoMode ? "Registrar Crédito" : "Confirmar"}</>}
           </button>
         </div>
       </div>
@@ -1185,7 +1185,7 @@ function DashboardView({ products, sales: salesToday }) {
   const kpis = [
     { label: "Ingresos Reales",  value: formatCurrency(totalReal),                icon: DollarSign,   color: "orange", sub: `${salesData.filter(v => !(v.esVentaFiada && v.estadoCobro !== "cobrado")).length} transacciones cobradas` },
     { label: "Ticket Promedio",  value: formatCurrency(avgTicket),                 icon: TrendingUp,   color: "blue",   sub: "Por venta cobrada" },
-    { label: "Fiado Pendiente",  value: formatCurrency(byMethod.fiado - salesData.filter(v => v.esVentaFiada && v.estadoCobro === "cobrado").reduce((s,v) => s+(Number(v.total)||0),0)), icon: Clock, color: "amber", sub: "Pendiente de cobro" },
+    { label: "Crédito Pendiente", value: formatCurrency(byMethod.fiado - salesData.filter(v => v.esVentaFiada && v.estadoCobro === "cobrado").reduce((s,v) => s+(Number(v.total)||0),0)), icon: Clock, color: "amber", sub: "Pendiente de cobro" },
     { label: "Sin Stock",        value: outStock.length,                            icon: Package,      color: "red",    sub: "Agotados" },
   ];
 
@@ -1284,7 +1284,7 @@ function DashboardView({ products, sales: salesToday }) {
                 { label: "Efectivo",      value: byMethod.efectivo,      color: "#22c55e" },
                 { label: "Tarjeta",       value: byMethod.tarjeta,       color: "#3b82f6" },
                 { label: "Transferencia", value: byMethod.transferencia,  color: "#a855f7" },
-                { label: "Fiado",         value: byMethod.fiado,         color: "#f59e0b" },
+                { label: "Crédito",       value: byMethod.fiado,         color: "#f59e0b" },
               ].map(({ label, value, color }) => {
                 const pct = totalSales > 0 ? Math.round((value / totalSales) * 100) : 0;
                 return (
@@ -1360,7 +1360,7 @@ function DashboardView({ products, sales: salesToday }) {
                   <div>
                     <p className="text-white text-sm font-medium flex items-center gap-1.5">
                       {sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}
-                      {sale.esVentaFiada && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full">Fiado</span>}
+                      {sale.esVentaFiada && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full">Crédito</span>}
                     </p>
                     <p className="text-zinc-500 text-xs capitalize">{sale.metodoPago} · {sale.cajero?.split("@")[0]}</p>
                   </div>
@@ -1381,21 +1381,24 @@ function DashboardView({ products, sales: salesToday }) {
 }
 
 // ============================================================
-// FIADO VIEW — Cuentas por Cobrar
+// CRÉDITO VIEW — Cuentas por Cobrar
 // ============================================================
 function FiadoView() {
   const [fiados,   setFiados]   = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [marking,  setMarking]  = useState(null);
   const [search,   setSearch]   = useState("");
+  const [error,    setError]    = useState(null);
 
   const load = async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await getVentasFiadoPendientes();
       setFiados(data);
     } catch(err) {
-      console.error(err);
+      console.error("[CréditoView] Error cargando datos:", err);
+      setError(err.message || "No se pudo conectar con la base de datos.");
     } finally {
       setLoading(false);
     }
@@ -1404,7 +1407,7 @@ function FiadoView() {
   useEffect(() => { load(); }, []);
 
   const handleCobrar = async (id) => {
-    if (!window.confirm("¿Marcar esta deuda como cobrada?")) return;
+    if (!window.confirm("¿Marcar esta deuda como pagada?")) return;
     setMarking(id);
     try {
       await marcarFiadoCobrado(id);
@@ -1427,7 +1430,7 @@ function FiadoView() {
           <h2 className="text-white font-black text-2xl flex items-center gap-2">
             <Clock className="w-6 h-6 text-amber-400" /> Cuentas por Cobrar
           </h2>
-          <p className="text-zinc-500 text-sm mt-0.5">{fiados.length} deudas pendientes</p>
+          <p className="text-zinc-500 text-sm mt-0.5">{fiados.length} crédito{fiados.length !== 1 ? "s" : ""} pendiente{fiados.length !== 1 ? "s" : ""}</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-2.5 text-center">
@@ -1452,10 +1455,23 @@ function FiadoView() {
 
       {loading ? (
         <div className="flex justify-center py-16"><RefreshCw className="w-6 h-6 text-amber-400 animate-spin" /></div>
+      ) : error ? (
+        <div className="flex flex-col items-center py-16 gap-4">
+          <div className="bg-red-500/10 border border-red-500/25 rounded-2xl px-6 py-5 text-center max-w-md">
+            <p className="text-red-400 font-bold mb-1">Error al cargar créditos</p>
+            <p className="text-zinc-500 text-sm mb-4">{error}</p>
+            <button
+              onClick={load}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium px-4 py-2 rounded-xl transition-colors flex items-center gap-2 mx-auto"
+            >
+              <RefreshCw className="w-4 h-4" /> Reintentar
+            </button>
+          </div>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center py-16 gap-3">
           <Check className="w-12 h-12 text-emerald-400 opacity-50" />
-          <p className="text-zinc-500 text-sm">{search ? "Sin resultados" : "¡No hay deudas pendientes! 🎉"}</p>
+          <p className="text-zinc-500 text-sm">{search ? "Sin resultados para esa búsqueda" : "¡No hay créditos pendientes! 🎉"}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -1477,7 +1493,7 @@ function FiadoView() {
 
                   {/* Productos */}
                   <div className="flex-1 min-w-0">
-                    <p className="text-zinc-400 text-xs font-semibold mb-1 uppercase tracking-wider">Productos fiados</p>
+                    <p className="text-zinc-400 text-xs font-semibold mb-1 uppercase tracking-wider">Productos a crédito</p>
                     <div className="space-y-0.5">
                       {(f.items || []).slice(0, 3).map((item, i) => (
                         <p key={i} className="text-zinc-300 text-xs truncate">
@@ -1503,7 +1519,7 @@ function FiadoView() {
                       disabled={marking === f.id}
                       className="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 hover:border-emerald-500/60 text-emerald-400 font-bold px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 disabled:opacity-50 shrink-0"
                     >
-                      {marking === f.id ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Cobrado</>}
+                      {marking === f.id ? <RefreshCw className="w-4 h-4 animate-spin" /> : <><Check className="w-4 h-4" /> Pagado</>}
                     </button>
                   </div>
                 </div>

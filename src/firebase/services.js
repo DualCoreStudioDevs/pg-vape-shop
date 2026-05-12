@@ -1,5 +1,5 @@
 // src/firebase/services.js — PG VAPE SHOP
-// ✅ Inventario ML con stock_botellas | ✅ Fiado estadoCobro:"pendiente" | ✅ Dashboard KPIs reales
+// ✅ Inventario ML con stock_botellas | ✅ Crédito estadoCobro:"pendiente" | ✅ Dashboard KPIs reales
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc,
   Timestamp, query, where, orderBy, runTransaction,
@@ -7,6 +7,7 @@ import {
 import { db } from "./config";
 
 // ── 1. IMAGEN BASE64 ──────────────────────────────────────────
+
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     if (!file) { reject(new Error("No se proporcionó ningún archivo.")); return; }
@@ -97,7 +98,7 @@ function buildProductPayload(data) {
   };
 }
 
-// ── 3. VENTA ATÓMICA — con ML sync + Fiado ───────────────────
+// ── 3. VENTA ATÓMICA — con ML sync + Crédito ─────────────────
 /**
  * completeSale (handleSale)
  *
@@ -112,10 +113,10 @@ function buildProductPayload(data) {
  *     stockMl              = total_ml_disponibles (sync)
  *     stock_botellas       = Math.floor(total_ml_disponibles / ml_por_botella)  ← AUTO-SYNC
  *
- * LÓGICA DE FIADO:
+ * LÓGICA DE CRÉDITO:
  *  - metodo === "fiado"  → estadoCobro: "pendiente"  (NO suma en KPIs de ingreso real)
  *  - cualquier otro      → estadoCobro: "cobrado"    (SÍ suma en KPIs)
- *  - marcarFiadoCobrado() cambia "pendiente" → "cobrado" cuando se recibe el pago
+ *  - marcarCreditoCobrado() cambia "pendiente" → "cobrado" cuando se recibe el pago
  */
 export async function completeSale(cartItems, total, paymentMethod, cajero = null, fiadoInfo = null) {
   const esVentaFiada = paymentMethod === "fiado";
@@ -246,19 +247,52 @@ export async function completeSale(cartItems, total, paymentMethod, cajero = nul
   return { success: true, ventaId };
 }
 
-// ── 4. FIADO — Cuentas por Cobrar ────────────────────────────
+// ── 4. CRÉDITO — Cuentas por Cobrar ──────────────────────────
 /**
- * ✅ FIX: Filtra correctamente con where("estadoCobro", "==", "pendiente")
- * Requiere índice compuesto en Firestore: estadoCobro ASC + fecha DESC
+ * ✅ FIX: Usa solo where("estadoCobro", "==", "pendiente") SIN orderBy
+ * para evitar la necesidad de un índice compuesto en Firestore.
+ * El ordenamiento por fecha se hace en el cliente después de recibir los datos.
+ *
+ * ESTRATEGIA DE FALLBACK:
+ *  1. Intenta query simple por estadoCobro:"pendiente"
+ *  2. Si falla (permisos, campo ausente), intenta por esVentaFiada:true y filtra en cliente
+ *  3. Retorna siempre ordenado por fecha descendente
  */
 export async function getVentasFiadoPendientes() {
-  const q = query(
-    collection(db, "ventas"),
-    where("estadoCobro", "==", "pendiente"),
-    orderBy("fecha", "desc")
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  let docs = [];
+
+  try {
+    // Intento 1: query simple sin orderBy (no requiere índice compuesto)
+    const q = query(
+      collection(db, "ventas"),
+      where("estadoCobro", "==", "pendiente")
+    );
+    const snap = await getDocs(q);
+    docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (err1) {
+    console.warn("[Crédito] Query por estadoCobro falló, usando fallback:", err1.message);
+    try {
+      // Intento 2 (fallback): traer por esVentaFiada:true y filtrar en cliente
+      const q2 = query(
+        collection(db, "ventas"),
+        where("esVentaFiada", "==", true)
+      );
+      const snap2 = await getDocs(q2);
+      const all = snap2.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Solo las que NO estén cobradas
+      docs = all.filter((v) => v.estadoCobro !== "cobrado");
+    } catch (err2) {
+      console.error("[Crédito] Ambos intentos fallaron:", err2.message);
+      throw err2;
+    }
+  }
+
+  // Ordenar por fecha descendente en cliente
+  return docs.sort((a, b) => {
+    const fa = a.fecha?.toDate?.() ?? new Date(a.fechaISO ?? 0);
+    const fb = b.fecha?.toDate?.() ?? new Date(b.fechaISO ?? 0);
+    return fb - fa;
+  });
 }
 
 /** Cambia estadoCobro "pendiente" → "cobrado": a partir de aquí entra en KPIs */
