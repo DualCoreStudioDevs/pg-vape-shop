@@ -1150,9 +1150,10 @@ function ProductDetailModal({ product, onClose, onAdd }) {
 // DASHBOARD VIEW — Gráficas SVG puras (sin recharts)
 // ============================================================
 function DashboardView({ products, sales: salesToday }) {
-  const [period,    setPeriod]    = useState("today");
-  const [salesData, setSalesData] = useState([]);
-  const [loading,   setLoading]   = useState(true);
+  const [period,      setPeriod]      = useState("today");
+  const [salesData,   setSalesData]   = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [deletingId,  setDeletingId]  = useState(null); // id de la venta que se está eliminando
   // Calendar date picker
   const todayStr = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState(todayStr);
@@ -1169,6 +1170,41 @@ function DashboardView({ products, sales: salesToday }) {
     }
     fetcher().then(setSalesData).finally(() => setLoading(false));
   }, [period, calMode, selectedDate]);
+
+  // Re-fetcher reutilizable para refrescar salesData tras una eliminación
+  const refetchSalesData = () => {
+    setLoading(true);
+    let fetcher;
+    if (calMode) {
+      const dateObj = new Date(selectedDate + "T12:00:00");
+      fetcher = () => getSalesByDate(dateObj);
+    } else {
+      fetcher = period === "today" ? getSalesToday : period === "week" ? getSalesThisWeek : getSalesThisMonth;
+    }
+    fetcher().then(setSalesData).finally(() => setLoading(false));
+  };
+
+  // ── Eliminar venta desde el Dashboard ──
+  const handleDeleteSale = async (sale) => {
+    const hora  = sale.fecha?.toDate?.()?.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" }) ?? "";
+    const label = `${sale.items?.length ?? 0} ítem(s) · ${formatCurrency(sale.total)}${hora ? " · " + hora : ""}`;
+    const confirmMsg =
+      `¿Eliminar esta venta?\n\n📋 ${label}\n\n` +
+      `⚠️ Se devolverán los productos al inventario.\nEsta acción no se puede deshacer.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setDeletingId(sale.id);
+    try {
+      await eliminarVentaCredito(sale.id);
+      // salesToday se actualiza solo via onSnapshot; refrescamos salesData del período
+      refetchSalesData();
+    } catch (err) {
+      alert("Error al eliminar la venta: " + err.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
 
   const chartData  = groupSalesByDay(salesData);
   const byMethod   = salesByMethod(salesData);
@@ -1356,23 +1392,45 @@ function DashboardView({ products, sales: salesToday }) {
             {salesToday.length === 0 ? (
               <p className="text-zinc-600 text-sm text-center py-8">Sin ventas hoy</p>
             ) : (
-              salesToday.slice(0, 8).map((sale) => (
-                <div key={sale.id} className="px-4 py-3 flex items-center justify-between hover:bg-zinc-800/20 transition-colors">
-                  <div>
-                    <p className="text-white text-sm font-medium flex items-center gap-1.5">
-                      {sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}
-                      {sale.esVentaFiada && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full">Crédito</span>}
-                    </p>
-                    <p className="text-zinc-500 text-xs capitalize">{sale.metodoPago} · {sale.cajero?.split("@")[0]}</p>
+              salesToday.slice(0, 8).map((sale) => {
+                const isDeleting = deletingId === sale.id;
+                return (
+                  <div key={sale.id} className="px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/20 transition-colors group">
+                    {/* Info de la venta */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-sm font-medium flex items-center gap-1.5">
+                        {sale.items?.length} ítem{sale.items?.length !== 1 ? "s" : ""}
+                        {sale.esVentaFiada && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded-full">Crédito</span>}
+                      </p>
+                      <p className="text-zinc-500 text-xs capitalize">{sale.metodoPago} · {sale.cajero?.split("@")[0]}</p>
+                    </div>
+
+                    {/* Monto + hora */}
+                    <div className="text-right shrink-0">
+                      <p className="text-orange-400 font-bold">{formatCurrency(sale.total)}</p>
+                      <p className="text-zinc-600 text-xs">
+                        {sale.fecha?.toDate?.()?.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    </div>
+
+                    {/* Botón eliminar */}
+                    <button
+                      onClick={() => handleDeleteSale(sale)}
+                      disabled={!!deletingId}
+                      title="Eliminar venta y devolver al inventario"
+                      className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
+                                 bg-transparent hover:bg-red-500/15 border border-transparent
+                                 hover:border-red-500/30 text-zinc-700 hover:text-red-400
+                                 opacity-0 group-hover:opacity-100
+                                 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      {isDeleting
+                        ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        : <Trash2 className="w-3.5 h-3.5" />}
+                    </button>
                   </div>
-                  <div className="text-right">
-                    <p className="text-orange-400 font-bold">{formatCurrency(sale.total)}</p>
-                    <p className="text-zinc-600 text-xs">
-                      {sale.fecha?.toDate?.()?.toLocaleTimeString("es-DO", { hour: "2-digit", minute: "2-digit" })}
-                    </p>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
